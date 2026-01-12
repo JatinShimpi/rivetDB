@@ -1,0 +1,1 @@
+ docker run -it --rm redis redis-cli -h host.docker.internal -p 7878 //run this command when we need to test the commands this opens a redis-cli to parse the resp inside docker
