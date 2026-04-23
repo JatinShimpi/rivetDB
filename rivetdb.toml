@@ -1,0 +1,19 @@
+# RivetDB Configuration File
+
+[server]
+host = "127.0.0.1"
+port = 7878
+max_connections = 10000
+metrics_port = 9090  # Prometheus metrics endpoint
+
+[memory]
+max_memory = "64MB"
+eviction_policy = "allkeys-lfu"  # Options: allkeys-lfu, allkeys-lru, noeviction
+
+[persistence]
+aof_enabled = true              # Enable AOF persistence
+aof_fsync = "everysec"          # Options: always, everysec, no
+aof_filename = "appendonly.aof" # AOF file path
+
+[logging]
+level = "info"                  # Options: trace, debug, info, warn, error

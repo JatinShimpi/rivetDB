@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <title>RivetDB Collaborative Whiteboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #1a1a2e;
+            overflow: hidden;
+        }
+
+        #header {
+            background: #16213e;
+            padding: 10px 20px;
+            color: white;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        #header h1 {
+            font-size: 18px;
+        }
+
+        #status {
+            font-size: 14px;
+            color: #4ECDC4;
+        }
+
+        #users {
+            display: flex;
+            gap: 10px;
+        }
+
+        .user-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        #canvas-container {
+            position: relative;
+        }
+
+        #canvas {
+            background: #0f0f23;
+            display: block;
+            cursor: crosshair;
+        }
+
+        .cursor {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            pointer-events: none;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+        }
+
+        .cursor::after {
+            content: attr(data-user);
+            position: absolute;
+            top: 20px;
+            left: 0;
+            font-size: 10px;
+            color: white;
+            white-space: nowrap;
+        }
+
+        #toolbar {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #16213e;
+            padding: 10px 20px;
+            border-radius: 8px;
+            display: flex;
+            gap: 15px;
+        }
+
+        #toolbar button {
+            background: #e94560;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        #toolbar button:hover {
+            background: #ff6b6b;
+        }
+
+        #debug {
+            position: fixed;
+            bottom: 80px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #4ECDC4;
+            padding: 10px;
+            font-family: monospace;
+            font-size: 12px;
+            border-radius: 4px;
+            max-width: 300px;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="header">
+        <h1>🎨 RivetDB Collaborative Whiteboard</h1>
+        <span id="status">Connecting...</span>
+        <div id="users"></div>
+    </div>
+
+    <div id="canvas-container">
+        <canvas id="canvas"></canvas>
+    </div>
+
+    <div id="toolbar">
+        <button onclick="clearCanvas()">Clear All</button>
+        <span style="color: white; line-height: 32px;">Draw with mouse | Your color: <span
+                id="mycolor">...</span></span>
+    </div>
+
+    <div id="debug">
+        <div>RivetDB Commands:</div>
+        <div id="commands"></div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+
+        // Resize canvas to fill window
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight - 50;
+        }
+        resize();
+        window.addEventListener('resize', resize);
+
+        // WebSocket connection
+        let ws;
+        let myUserId = null;
+        let myColor = '#ffffff';
+        let cursors = {};
+        let isDrawing = false;
+        let currentPath = [];
+
+        function connect() {
+            // Use same host as the page, or prompt if opened as file
+            let host = window.location.hostname || 'localhost';
+            if (host === '' || window.location.protocol === 'file:') {
+                host = prompt('Enter server IP (your laptop IP):', '192.168.1.100') || 'localhost';
+            }
+            ws = new WebSocket(`ws://${host}:8765`);
+            console.log('Connecting to:', `ws://${host}:8765`);
+
+            ws.onopen = () => {
+                document.getElementById('status').textContent = 'Connected';
+                document.getElementById('status').style.color = '#4ECDC4';
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status').textContent = 'Disconnected - Reconnecting...';
+                document.getElementById('status').style.color = '#e94560';
+                setTimeout(connect, 2000);
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+
+                switch (msg.type) {
+                    case 'init':
+                        myUserId = msg.user_id;
+                        myColor = msg.color;
+                        document.getElementById('mycolor').textContent = myUserId;
+                        document.getElementById('mycolor').style.color = myColor;
+                        updateUsers(msg.online);
+                        logCommand(`SADD whiteboard:online ${myUserId}`);
+                        break;
+
+                    case 'cursor':
+                        updateCursor(msg.user_id, msg.x, msg.y, msg.color);
+                        break;
+
+                    case 'stroke':
+                        drawStroke(msg.data.points, msg.data.color);
+                        break;
+
+                    case 'user_joined':
+                        addUserDot(msg.user_id, msg.color);
+                        logCommand(`SADD whiteboard:online ${msg.user_id}`);
+                        break;
+
+                    case 'user_left':
+                        removeUser(msg.user_id);
+                        logCommand(`SREM whiteboard:online ${msg.user_id}`);
+                        break;
+
+                    case 'clear':
+                        ctx.clearRect(0, 0, canvas.width, canvas.height);
+                        logCommand('DEL whiteboard:strokes');
+                        break;
+                }
+            };
+        }
+        connect();
+
+        // Cursor tracking
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'cursor', x, y }));
+            }
+
+            if (isDrawing) {
+                currentPath.push({ x, y });
+                drawLocalPath();
+            }
+        });
+
+        // Drawing
+        canvas.addEventListener('mousedown', (e) => {
+            isDrawing = true;
+            const rect = canvas.getBoundingClientRect();
+            currentPath = [{ x: e.clientX - rect.left, y: e.clientY - rect.top }];
+        });
+
+        canvas.addEventListener('mouseup', () => {
+            if (isDrawing && currentPath.length > 1) {
+                ws.send(JSON.stringify({ type: 'draw', points: currentPath }));
+                logCommand(`LPUSH whiteboard:strokes '${JSON.stringify({ points: currentPath.length })}'`);
+            }
+            isDrawing = false;
+            currentPath = [];
+        });
+
+        canvas.addEventListener('mouseleave', () => {
+            isDrawing = false;
+            currentPath = [];
+        });
+
+        function drawLocalPath() {
+            if (currentPath.length < 2) return;
+            ctx.beginPath();
+            ctx.strokeStyle = myColor;
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            const last = currentPath[currentPath.length - 2];
+            const curr = currentPath[currentPath.length - 1];
+            ctx.moveTo(last.x, last.y);
+            ctx.lineTo(curr.x, curr.y);
+            ctx.stroke();
+        }
+
+        function drawStroke(points, color) {
+            if (points.length < 2) return;
+            ctx.beginPath();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
+            ctx.moveTo(points[0].x, points[0].y);
+            for (let i = 1; i < points.length; i++) {
+                ctx.lineTo(points[i].x, points[i].y);
+            }
+            ctx.stroke();
+        }
+
+        function updateCursor(userId, x, y, color) {
+            let cursor = cursors[userId];
+            if (!cursor) {
+                cursor = document.createElement('div');
+                cursor.className = 'cursor';
+                cursor.innerHTML = `<svg width="20" height="20" viewBox="0 0 24 24" fill="${color}">
+                    <path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>
+                </svg>`;
+                cursor.setAttribute('data-user', userId);
+                container.appendChild(cursor);
+                cursors[userId] = cursor;
+            }
+            cursor.style.left = x + 'px';
+            cursor.style.top = (y + 50) + 'px';
+        }
+
+        function removeUser(userId) {
+            if (cursors[userId]) {
+                cursors[userId].remove();
+                delete cursors[userId];
+            }
+            const dot = document.querySelector(`[data-userid="${userId}"]`);
+            if (dot) dot.remove();
+        }
+
+        function updateUsers(users) {
+            const container = document.getElementById('users');
+            container.innerHTML = '';
+            users.forEach((u, i) => addUserDot(u, ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7'][i % 5]));
+        }
+
+        function addUserDot(userId, color) {
+            const dot = document.createElement('div');
+            dot.className = 'user-dot';
+            dot.style.backgroundColor = color;
+            dot.title = userId;
+            dot.setAttribute('data-userid', userId);
+            document.getElementById('users').appendChild(dot);
+        }
+
+        function clearCanvas() {
+            ws.send(JSON.stringify({ type: 'clear' }));
+        }
+
+        // Debug log
+        const cmdLog = [];
+        function logCommand(cmd) {
+            cmdLog.unshift(cmd);
+            if (cmdLog.length > 5) cmdLog.pop();
+            document.getElementById('commands').innerHTML = cmdLog.map(c => `> ${c}`).join('<br>');
+        }
+    </script>
+</body>
+
+</html>

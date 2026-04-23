@@ -1,6 +1,48 @@
 [package]
-name = "redis-demo"
+name = "rivetdb"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [dependencies]
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# CLI parsing
+clap = { version = "4.5", features = ["derive"] }
+
+# Configuration
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+
+# Sorted sets
+ordered-float = "4.2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Async I/O utilities
+bytes = "1.5"
+
+# JSON parsing for schemas
+serde_json = "1.0"
+
+# JSONPath for queries
+jsonpath-rust = "0.7"
+
+# HTTP server for metrics
+axum = "0.7"
+tower = "0.5"
+bloomfilter = "1.0"
+sqlparser = "0.39"
+
+# Lock-free concurrent HashMap
+dashmap = "6.0"
+
+[lib]
+name = "rivetdb"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rivetdb"
+path = "src/main.rs"

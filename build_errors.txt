@@ -1,0 +1,733 @@
+﻿cargo :    Compiling rivetdb v0.1.0 
+(D:\dev\rivetDb)
+At line:1 char:1
++ cargo build 2>&1 | Out-File 
+build_errors.txt -Encoding UTF8; 
+Get-Cont ...
++ ~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpec 
+   ified: (   Compiling ri...D:\dev\  
+  rivetDb):String) [], RemoteExcept   
+ ion
+    + FullyQualifiedErrorId : NativeC 
+   ommandError
+ 
+warning: unused import: `HashMap`
+ --> src\storage\state.rs:1:46
+  |
+1 | use std::collections::{VecDeque, 
+BinaryHeap, HashMap};
+  |                                   
+           ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` 
+on by default
+
+warning: unused import: `RwLock`
+ --> src\storage\state.rs:3:29
+  |
+3 | use std::sync::{Arc, Mutex, 
+RwLock};
+  |                             ^^^^^^
+
+error[E0308]: mismatched types
+   --> src\commands\zset.rs:352:59
+    |
+352 |                 let range = 
+zset.range_by_score(min, max, limit);
+    |                                 
+ --------------           ^^^^^ 
+expected `Option<usize>`, found 
+`Option<(usize, usize)>`
+    |                                 
+ |
+    |                                 
+ arguments to this method are 
+incorrect
+    |
+    = note: expected enum 
+`std::option::Option<usize>`
+               found enum 
+`std::option::Option<(usize, usize)>`
+note: method defined here
+   --> src\storage\zset.rs:110:12
+    |
+110 |     pub fn 
+range_by_score(&self, min: f64, max: 
+f64, limit: Option<usize>) -> 
+Vec<(String, f64)> {
+    |            ^^^^^^^^^^^^^^       
+                     
+--------------------
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:296:20
+    |
+296 |             if let 
+ValueObject::List(list) = entry {
+    |                    
+^^^^^^^^^^^^^^^^^^^^^^^   ----- this 
+expression has type 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+    |                    |
+    |                    expected 
+`RefMut<'_, String, ValueObject>`, 
+found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+help: consider dereferencing to 
+access the inner value using the 
+Deref trait
+    |
+296 |             if let 
+ValueObject::List(list) = *entry {
+    |                                 
+             +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:306:20
+    |
+306 |             if let 
+ValueObject::List(list) = entry {
+    |                    
+^^^^^^^^^^^^^^^^^^^^^^^   ----- this 
+expression has type 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+    |                    |
+    |                    expected 
+`RefMut<'_, String, ValueObject>`, 
+found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+help: consider dereferencing to 
+access the inner value using the 
+Deref trait
+    |
+306 |             if let 
+ValueObject::List(list) = *entry {
+    |                                 
+             +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:318:20
+    |
+318 |             if let 
+ValueObject::Set(set) = entry {
+    |                    
+^^^^^^^^^^^^^^^^^^^^^   ----- this 
+expression has type 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+    |                    |
+    |                    expected 
+`RefMut<'_, String, ValueObject>`, 
+found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+help: consider dereferencing to 
+access the inner value using the 
+Deref trait
+    |
+318 |             if let 
+ValueObject::Set(set) = *entry {
+    |                                 
+           +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:326:25
+    |
+326 |             if let 
+Some(ValueObject::Set(set)) = 
+state.db.get_mut(key) {
+    |                         
+^^^^^^^^^^^^^^^^^^^^^    
+--------------------- this expression 
+has type `std::option::Option<dashmap:
+:mapref::one::RefMut<'_, 
+std::string::String, ValueObject>>`
+    |                         |
+    |                         
+expected `RefMut<'_, String, 
+ValueObject>`, found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:338:20
+    |
+338 |             if let 
+ValueObject::ZSet(zset) = entry {
+    |                    
+^^^^^^^^^^^^^^^^^^^^^^^   ----- this 
+expression has type 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+    |                    |
+    |                    expected 
+`RefMut<'_, String, ValueObject>`, 
+found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+help: consider dereferencing to 
+access the inner value using the 
+Deref trait
+    |
+338 |             if let 
+ValueObject::ZSet(zset) = *entry {
+    |                                 
+             +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:356:25
+    |
+356 |             if let 
+Some(ValueObject::ZSet(zset)) = 
+state.db.get_mut(key) {
+    |                         
+^^^^^^^^^^^^^^^^^^^^^^^    
+--------------------- this expression 
+has type `std::option::Option<dashmap:
+:mapref::one::RefMut<'_, 
+std::string::String, ValueObject>>`
+    |                         |
+    |                         
+expected `RefMut<'_, String, 
+ValueObject>`, found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:368:20
+    |
+368 |             if let 
+ValueObject::Hash(hash) = entry {
+    |                    
+^^^^^^^^^^^^^^^^^^^^^^^   ----- this 
+expression has type 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+    |                    |
+    |                    expected 
+`RefMut<'_, String, ValueObject>`, 
+found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+help: consider dereferencing to 
+access the inner value using the 
+Deref trait
+    |
+368 |             if let 
+ValueObject::Hash(hash) = *entry {
+    |                                 
+             +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:378:25
+    |
+378 |             if let 
+Some(ValueObject::Hash(hash)) = 
+state.db.get_mut(key) {
+    |                         
+^^^^^^^^^^^^^^^^^^^^^^^    
+--------------------- this expression 
+has type `std::option::Option<dashmap:
+:mapref::one::RefMut<'_, 
+std::string::String, ValueObject>>`
+    |                         |
+    |                         
+expected `RefMut<'_, String, 
+ValueObject>`, found `ValueObject`
+    |
+    = note: expected struct 
+`dashmap::mapref::one::RefMut<'_, 
+std::string::String, ValueObject>`
+                 found enum 
+`ValueObject`
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:388:54
+    |
+388 |                 
+state.db.insert(cmd.args[1].clone(), 
+value);
+    |                          ------ 
+                     ^^^^^ expected 
+`ValueObject`, found `(String, 
+ValueObject)`
+    |                          |
+    |                          
+arguments to this method are incorrect
+    |
+    = note: expected enum 
+`ValueObject`
+              found tuple 
+`(std::string::String, ValueObject)`
+help: the return type of this call is 
+`(std::string::String, ValueObject)` 
+due to the type of the argument passed
+   --> src\persistence\aof.rs:388:17
+    |
+388 |                 
+state.db.insert(cmd.args[1].clone(), 
+value);
+    |                 ^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^-----^
+    |                                 
+                     |
+    |                                 
+                     this argument 
+influences the return type of `insert`
+note: method defined here
+   --> C:\Users\HP\.cargo\registry\src
+\index.crates.io-1949cf8c6b5b557f\dash
+map-6.1.0\src\lib.rs:472:12
+    |
+472 |     pub fn insert(&self, key: 
+K, value: V) -> Option<V> {
+    |            ^^^^^^
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:398:21
+    |
+398 |     evict_if_needed(state, 
+None);
+    |     --------------- ^^^^^ 
+expected `&Arc<ServerState>`, found 
+`&mut ServerState`
+    |     |
+    |     arguments to this function 
+are incorrect
+    |
+    = note:      expected reference 
+`&Arc<ServerState>`
+            found mutable reference 
+`&mut ServerState`
+note: function defined here
+   --> src\storage\eviction.rs:28:8
+    |
+28  | pub fn evict_if_needed(state: 
+&SharedState, protected: 
+Option<&str>) {
+    |        ^^^^^^^^^^^^^^^ 
+-------------------
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:411:9
+    |
+411 |     for (key, value) in 
+&state.db {
+    |         ^^^^^^^^^^^^    
+--------- this is an iterator with 
+items of type `dashmap::mapref::multip
+le::RefMulti<'_, std::string::String, 
+ValueObject>`
+    |         |
+    |         expected `RefMulti<'_, 
+String, ValueObject>`, found `(_, _)`
+    |
+    = note: expected struct `dashmap::
+mapref::multiple::RefMulti<'_, 
+std::string::String, ValueObject>`
+                found tuple `(_, _)`
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:414:53
+    |
+414 |                 
+write_set_command(&mut writer, key, 
+s)?;
+    |                 
+-----------------                   ^ 
+expected `&str`, found `String`
+    |                 |
+    |                 arguments to 
+this function are incorrect
+    |
+note: function defined here
+   --> src\persistence\aof.rs:472:4
+    |
+472 | fn write_set_command<W: 
+Write>(writer: &mut W, key: &str, 
+value: &str) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^            
+                          -----------
+help: consider borrowing here
+    |
+414 |                 
+write_set_command(&mut writer, key, 
+&s)?;
+    |                                 
+                    +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:419:59
+    |
+419 |                     
+write_rpush_command(&mut writer, key, 
+list)?;
+    |                     
+-------------------                   
+^^^^ expected `&LinkedList<String>`, 
+found `LinkedList<String>`
+    |                     |
+    |                     arguments 
+to this function are incorrect
+    |
+    = note: expected reference 
+`&LinkedList<_>`
+                  found struct 
+`LinkedList<_>`
+note: function defined here
+   --> src\persistence\aof.rs:476:4
+    |
+476 | fn write_rpush_command<W: 
+Write>(writer: &mut W, key: &str, 
+list: &std::collections::LinkedList<St
+ring>) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^^          
+                            ----------
+---------------------------------
+help: consider borrowing here
+    |
+419 |                     
+write_rpush_command(&mut writer, key, 
+&list)?;
+    |                                 
+                          +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:425:58
+    |
+425 |                     
+write_sadd_command(&mut writer, key, 
+set)?;
+    |                     
+------------------                   
+^^^ expected `&HashSet<String>`, 
+found `HashSet<String>`
+    |                     |
+    |                     arguments 
+to this function are incorrect
+    |
+    = note: expected reference 
+`&HashSet<_>`
+                  found struct 
+`HashSet<_>`
+note: function defined here
+   --> src\persistence\aof.rs:488:4
+    |
+488 | fn write_sadd_command<W: 
+Write>(writer: &mut W, key: &str, 
+set: 
+&std::collections::HashSet<String>) 
+-> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^           
+                           -----------
+----------------------------
+help: consider borrowing here
+    |
+425 |                     
+write_sadd_command(&mut writer, key, 
+&set)?;
+    |                                 
+                         +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:431:58
+    |
+431 |                     
+write_zadd_command(&mut writer, key, 
+zset)?;
+    |                     
+------------------                   
+^^^^ expected `&ZSet`, found `ZSet`
+    |                     |
+    |                     arguments 
+to this function are incorrect
+    |
+note: function defined here
+   --> src\persistence\aof.rs:500:4
+    |
+500 | fn write_zadd_command<W: 
+Write>(writer: &mut W, key: &str, 
+zset: &ZSet) -> io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^           
+                           -----------
+help: consider borrowing here
+    |
+431 |                     
+write_zadd_command(&mut writer, key, 
+&zset)?;
+    |                                 
+                         +
+
+error[E0308]: mismatched types
+   --> src\persistence\aof.rs:437:58
+    |
+437 |                     
+write_hset_command(&mut writer, key, 
+hash)?;
+    |                     
+------------------                   
+^^^^ expected `&HashMap<String, 
+String>`, found `HashMap<String, 
+String>`
+    |                     |
+    |                     arguments 
+to this function are incorrect
+    |
+    = note: expected reference 
+`&HashMap<_, _>`
+                  found struct 
+`HashMap<_, _>`
+note: function defined here
+   --> src\persistence\aof.rs:516:4
+    |
+516 | fn write_hset_command<W: 
+Write>(writer: &mut W, key: &str, 
+hash: &HashMap<String, String>) -> 
+io::Result<()> {
+    |    ^^^^^^^^^^^^^^^^^^           
+                           
+------------------------------
+help: consider borrowing here
+    |
+437 |                     
+write_hset_command(&mut writer, key, 
+&hash)?;
+    |                                 
+                         +
+
+error[E0308]: mismatched types
+    --> src\persistence\aof.rs:443:54
+     |
+443  |                 let json_str = 
+serde_json::to_string(json).unwrap_or_
+default();
+     |                                
+--------------------- ^^^^ expected 
+`&_`, found `Value`
+     |                                
+|
+     |                                
+arguments to this function are 
+incorrect
+     |
+     = note: expected reference `&_`
+                     found enum 
+`serde_json::Value`
+note: function defined here
+    --> C:\Users\HP\.cargo\registry\sr
+c\index.crates.io-1949cf8c6b5b557f\ser
+de_json-1.0.149\src\ser.rs:2245:8
+     |
+2245 | pub fn to_string<T>(value: &T) 
+-> Result<String>
+     |        ^^^^^^^^^
+help: consider borrowing here
+     |
+443  |                 let json_str = 
+serde_json::to_string(&json).unwrap_or
+_default();
+     |                                
+                      +
+
+error[E0716]: temporary value dropped 
+while borrowed
+  --> src\commands\string.rs:69:18
+   |
+69 |       let result = 
+state.db.entry(key.clone())
+   |  __________________^
+70 | |         .or_insert_with(|| 
+ValueObject::String("0".into()))
+   | |________________________________
+___________________________^ creates 
+a temporary value which is freed 
+while still in use
+71 |           .value_mut();
+   |                       - 
+temporary value is freed at the end 
+of this statement
+72 |       
+73 |       match result {
+   |             ------ borrow later 
+used here
+   |
+help: consider using a `let` binding 
+to create a longer lived value
+   |
+69 ~     let mut binding = 
+state.db.entry(key.clone())
+70 +         .or_insert_with(|| 
+ValueObject::String("0".into()));
+71 ~     let result = binding
+   |
+
+error[E0716]: temporary value dropped 
+while borrowed
+   --> src\commands\string.rs:102:18
+    |
+102 |       let result = 
+state.db.entry(key.clone())
+    |  __________________^
+103 | |         .or_insert_with(|| 
+ValueObject::String("0".into()))
+    | |_______________________________
+____________________________^ creates 
+a temporary value which is freed 
+while still in use
+104 |           .value_mut();
+    |                       - 
+temporary value is freed at the end 
+of this statement
+105 |       
+106 |       match result {
+    |             ------ borrow later 
+used here
+    |
+help: consider using a `let` binding 
+to create a longer lived value
+    |
+102 ~     let mut binding = 
+state.db.entry(key.clone())
+103 +         .or_insert_with(|| 
+ValueObject::String("0".into()));
+104 ~     let result = binding
+    |
+
+error[E0716]: temporary value dropped 
+while borrowed
+   --> src\commands\string.rs:135:18
+    |
+135 |       let result = 
+state.db.entry(key.clone())
+    |  __________________^
+136 | |         .or_insert_with(|| 
+ValueObject::String("0".into()))
+    | |_______________________________
+____________________________^ creates 
+a temporary value which is freed 
+while still in use
+137 |           .value_mut();
+    |                       - 
+temporary value is freed at the end 
+of this statement
+138 |       
+139 |       match result {
+    |             ------ borrow later 
+used here
+    |
+help: consider using a `let` binding 
+to create a longer lived value
+    |
+135 ~     let mut binding = 
+state.db.entry(key.clone())
+136 +         .or_insert_with(|| 
+ValueObject::String("0".into()));
+137 ~     let result = binding
+    |
+
+error[E0716]: temporary value dropped 
+while borrowed
+   --> src\commands\string.rs:168:18
+    |
+168 |       let result = 
+state.db.entry(key.clone())
+    |  __________________^
+169 | |         .or_insert_with(|| 
+ValueObject::String("0".into()))
+    | |_______________________________
+____________________________^ creates 
+a temporary value which is freed 
+while still in use
+170 |           .value_mut();
+    |                       - 
+temporary value is freed at the end 
+of this statement
+171 |       
+172 |       match result {
+    |             ------ borrow later 
+used here
+    |
+help: consider using a `let` binding 
+to create a longer lived value
+    |
+168 ~     let mut binding = 
+state.db.entry(key.clone())
+169 +         .or_insert_with(|| 
+ValueObject::String("0".into()));
+170 ~     let result = binding
+    |
+
+error[E0716]: temporary value dropped 
+while borrowed
+   --> src\commands\string.rs:201:18
+    |
+201 |       let result = 
+state.db.entry(key.clone())
+    |  __________________^
+202 | |         .or_insert_with(|| 
+ValueObject::String("0".into()))
+    | |_______________________________
+____________________________^ creates 
+a temporary value which is freed 
+while still in use
+203 |           .value_mut();
+    |                       - 
+temporary value is freed at the end 
+of this statement
+204 |       
+205 |       match result {
+    |             ------ borrow later 
+used here
+    |
+help: consider using a `let` binding 
+to create a longer lived value
+    |
+201 ~     let mut binding = 
+state.db.entry(key.clone())
+202 +         .or_insert_with(|| 
+ValueObject::String("0".into()));
+203 ~     let result = binding
+    |
+
+Some errors have detailed 
+explanations: E0308, E0716.
+For more information about an error, 
+try `rustc --explain E0308`.
+warning: `rivetdb` (lib) generated 2 
+warnings
+error: could not compile `rivetdb` 
+(lib) due to 23 previous errors; 2 
+warnings emitted

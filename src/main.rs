@@ -1,988 +1,469 @@
-use std::collections::{HashMap, HashSet, LinkedList};
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
-
+use clap::Parser;
 use std::cmp::Reverse;
-use std::collections::BinaryHeap;
-use std::time::{Duration, Instant};
+use std::io::{self, Cursor};
+use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tracing::{debug, error, info, warn};
 
-type ExpiryHeap = BinaryHeap<Reverse<(Instant, String)>>;
+// Import from our modules
+use rivetdb::commands::process_command;
+use rivetdb::commands::auth::{auth, is_auth_exempt};
+use rivetdb::commands::json::{
+    json_set, json_get, json_mget, json_del, json_type, 
+    json_arrappend, json_arrlen, json_objkeys, json_objlen, json_numincrby,
+};
+use rivetdb::commands::schema::{
+    create_schema_registry, schema_cmd, tget, tkeys, tset, tvalidate, SchemaRegistry,
+};
+use rivetdb::config::SecurityConfig;
+use rivetdb::metrics::start_metrics_server;
+use rivetdb::persistence::{
+    create_async_aof_writer, is_write_command, AofFsyncPolicy,
+    AsyncAofWriter, SharedAsyncAofWriter,
+};
+use rivetdb::protocol::{frame_to_command, parse_frame};
+use rivetdb::storage::SlowLogEntry;
+use rivetdb::{Config, EvictionPolicy, ParsedCommand, RespReply, ServerState, SharedState};
 
-use std::collections::VecDeque;
+/// RivetDB - A high-performance in-memory database written in Rust
+#[derive(Parser, Debug)]
+#[command(name = "rivetdb")]
+#[command(version, about, long_about = None)]
+struct Args {
+    /// Configuration file path
+    #[arg(short, long, default_value = "rivetdb.toml")]
+    config: String,
 
-struct SlowLogEntry {
-    command: String,
-    duration_ns: u128,
-    timestamp: Instant,
+    /// Server host to bind to
+    #[arg(long)]
+    host: Option<String>,
+
+    /// Server port to bind to
+    #[arg(short, long)]
+    port: Option<u16>,
+
+    /// Log level (trace, debug, info, warn, error)
+    #[arg(long)]
+    log_level: Option<String>,
+
+    /// Enable AOF persistence
+    #[arg(long)]
+    aof: Option<bool>,
 }
 
-#[derive(Debug, PartialEq)]
-enum EvictionPolicy {
-    NoEviction,
-    AllKeysLFU,
-    AllKeysLRU,
-}
+#[tokio::main]
+async fn main() {
+    // Parse CLI arguments
+    let args = Args::parse();
 
-struct ServerState {
-    db: HashMap<String, ValueObject>,
-    expiries: ExpiryHeap,
-    expired_count: u64,
+    // Load configuration
+    let mut config = Config::load_or_default(&args.config);
 
-    // 🔍 Observability
-    command_count: HashMap<String, u64>,
-    command_time_ns: HashMap<String, u128>,
-    slowlog: VecDeque<SlowLogEntry>,
-    key_access_count: HashMap<String, u64>,
-
-    max_memory: usize, // bytes
-    eviction_policy: EvictionPolicy,
-}
-
-type SharedState = Arc<Mutex<ServerState>>;
-
-pub enum ValueObject {
-    String(String),
-    List(LinkedList<String>),
-    Set(HashSet<String>),
-}
-
-// type Db = Arc<Mutex<HashMap<String, ValueObject>>>;
-
-/// RESP frame representation (subset of RESP)
-// For now we only really use Array + Bulk for commands.
-#[derive(Debug)]
-enum RespFrame {
-    Simple(String),
-    Error(String),
-    Integer(i64),
-    Bulk(Option<Vec<u8>>),         // None = Null bulk string
-    Array(Option<Vec<RespFrame>>), // None = Null array
-}
-
-/// Parsed command: what the executer will see
-struct ParsedCommand {
-    name: String,
-    args: Vec<String>,
-}
-
-enum RespReply {
-    Simple(String),        // +OK
-    Error(String),         // -ERR msg
-    Integer(i64),          // :1
-    Bulk(Option<String>),  // $-1 or bulk
-    Array(Vec<RespReply>), // *N ...
-}
-
-impl EvictionPolicy {
-    fn as_str(&self) -> &'static str {
-        match self {
-            EvictionPolicy::NoEviction => "noeviction",
-            EvictionPolicy::AllKeysLFU => "allkeys-lfu",
-            EvictionPolicy::AllKeysLRU => "allkeys-lru",
-        }
+    // Override config with CLI arguments
+    if let Some(host) = args.host {
+        config.server.host = host;
     }
-}
+    if let Some(port) = args.port {
+        config.server.port = port;
+    }
+    if let Some(level) = args.log_level {
+        config.logging.level = level;
+    }
+    if let Some(aof_enabled) = args.aof {
+        config.persistence.aof_enabled = aof_enabled;
+    }
 
-impl RespReply {
-    fn to_bytes(&self) -> Vec<u8> {
-        match self {
-            RespReply::Simple(s) => format!("+{}\r\n", s).into_bytes(),
+    // Initialize tracing/logging
+    init_logging(&config.logging.level);
 
-            RespReply::Error(e) => format!("-ERR {}\r\n", e).into_bytes(),
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Starting RivetDB (async mode with type-safe schemas)"
+    );
+    info!(
+        host = %config.server.host,
+        port = config.server.port,
+        "Server configuration"
+    );
+    info!(
+        max_memory = %config.memory.max_memory,
+        eviction_policy = %config.memory.eviction_policy,
+        "Memory configuration"
+    );
+    info!(
+        aof_enabled = config.persistence.aof_enabled,
+        aof_fsync = %config.persistence.aof_fsync,
+        aof_file = %config.persistence.aof_filename,
+        "Persistence configuration"
+    );
 
-            RespReply::Integer(i) => format!(":{}\r\n", i).into_bytes(),
+    // Parse eviction policy
+    let eviction_policy = match config.memory.eviction_policy.as_str() {
+        "allkeys-lfu" => EvictionPolicy::AllKeysLFU,
+        "allkeys-lru" => EvictionPolicy::AllKeysLRU,
+        "noeviction" => EvictionPolicy::NoEviction,
+        _ => {
+            warn!(
+                policy = %config.memory.eviction_policy,
+                "Unknown eviction policy, defaulting to allkeys-lfu"
+            );
+            EvictionPolicy::AllKeysLFU
+        }
+    };
 
-            RespReply::Bulk(None) => b"$-1\r\n".to_vec(),
+    // Initialize server state with DashMap (lock-free concurrent HashMap!)
+    let state: SharedState = Arc::new(ServerState::new(
+        config.max_memory_bytes(),
+        eviction_policy,
+    ));
 
-            RespReply::Bulk(Some(s)) => format!("${}\r\n{}\r\n", s.len(), s).into_bytes(),
+    // Initialize schema registry
+    let schema_registry: SchemaRegistry = create_schema_registry();
+    info!("Schema registry initialized (type-safe keys enabled)");
 
-            RespReply::Array(items) => {
-                let mut out = format!("*{}\r\n", items.len()).into_bytes();
-                for item in items {
-                    out.extend(item.to_bytes());
-                }
-                out
+    // TODO: Load AOF - needs refactoring for DashMap approach
+    // AOF loading would need to be updated to work with the new ServerState
+    if config.persistence.aof_enabled {
+        info!("AOF persistence enabled (loading not yet available with DashMap)");
+    }
+
+    info!(
+        max_memory_bytes = state.max_memory,
+        keys = state.key_count(),
+        mode = "DashMap (lock-free)",
+        "Server state initialized"
+    );
+
+    // Initialize ASYNC AOF writer if enabled (non-blocking for better throughput!)
+    let aof_writer: SharedAsyncAofWriter = if config.persistence.aof_enabled {
+        let fsync_policy = AofFsyncPolicy::from(config.persistence.aof_fsync.as_str());
+        // Channel size of 10,000 allows high burst throughput
+        match create_async_aof_writer(&config.persistence.aof_filename, fsync_policy, 10_000) {
+            Ok(writer) => {
+                info!(
+                    file = %config.persistence.aof_filename,
+                    channel_size = 10_000,
+                    "Async AOF writer initialized (non-blocking)"
+                );
+                writer
+            }
+            Err(e) => {
+                error!(error = %e, "Failed to create async AOF writer");
+                Arc::new(None)
             }
         }
-    }
-}
+    } else {
+        Arc::new(None)
+    };
 
-fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7878").expect("failed to bind to address");
-    println!("server listening on 127.0.0.1:7878");
+    // Bind to address using async Tokio
+    let bind_addr = format!("{}:{}", config.server.host, config.server.port);
+    let listener = TcpListener::bind(&bind_addr)
+        .await
+        .unwrap_or_else(|e| panic!("Failed to bind to {}: {}", bind_addr, e));
 
-    let state = Arc::new(Mutex::new(ServerState {
-        db: HashMap::new(),
-        expiries: BinaryHeap::new(),
-        expired_count: 0,
+    info!(addr = %bind_addr, "Server listening (async)");
 
-        command_count: HashMap::new(),
-        command_time_ns: HashMap::new(),
-        slowlog: VecDeque::with_capacity(128),
-        key_access_count: HashMap::new(),
+    // Start Prometheus metrics server
+    let metrics_state = Arc::clone(&state);
+    let metrics_port = config.server.metrics_port;
+    tokio::spawn(async move {
+        start_metrics_server(metrics_state, metrics_port).await;
+    });
+    info!(port = metrics_port, "Prometheus metrics server started at /metrics");
 
-        max_memory: 64 * 1024 * 1024, // 64 MB default
-        eviction_policy: EvictionPolicy::AllKeysLFU,
-    }));
+    // Start background expiry task
+    let expiry_state = Arc::clone(&state);
+    tokio::spawn(async move {
+        run_expiry_loop(expiry_state).await;
+    });
+    info!("Expiry background task started");
 
-    start_expiry_thread(Arc::clone(&state));
+    // Track active connections
+    let connection_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    
+    // Clone security config for sharing across connections
+    let security_config = Arc::new(config.security.clone());
 
-    // let db: Db = Arc::new(Mutex::new(HashMap::new()));
-
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                println!("new connection: {}", stream.peer_addr().unwrap());
+    // Accept connections (async loop)
+    loop {
+        match listener.accept().await {
+            Ok((stream, addr)) => {
+                let count =
+                    connection_count.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                info!(client = %addr, connections = count, "New connection");
 
                 let state_clone = Arc::clone(&state);
-                thread::spawn(move || {
-                    handle_connection(stream, state_clone);
+                let aof_clone = Arc::clone(&aof_writer);
+                let schema_clone = Arc::clone(&schema_registry);
+                let conn_count = Arc::clone(&connection_count);
+                let security_clone = Arc::clone(&security_config);
+
+                // Spawn async task (not OS thread!)
+                // This is the key benefit: thousands of concurrent connections with minimal memory
+                tokio::spawn(async move {
+                    handle_connection(stream, state_clone, aof_clone, schema_clone, security_clone).await;
+                    let remaining =
+                        conn_count.fetch_sub(1, std::sync::atomic::Ordering::Relaxed) - 1;
+                    debug!(connections = remaining, "Connection closed");
                 });
             }
             Err(e) => {
-                eprintln!("failed to establish a connection: {}", e);
+                error!(error = %e, "Failed to accept connection");
             }
         }
     }
 }
 
-/// Read a single CRLF-terminated line (without the trailing CRLF)
-fn read_crlf_line(reader: &mut impl BufRead) -> io::Result<String> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
-    if n == 0 {
-        return Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            "EOF while reading line",
-        ));
-    }
+/// Async connection handler with schema support and authentication
+async fn handle_connection(
+    mut stream: TcpStream,
+    state: SharedState,
+    aof: SharedAsyncAofWriter,
+    schema: SchemaRegistry,
+    security: Arc<SecurityConfig>,
+) {
+    let peer_addr = stream.peer_addr().ok();
 
-    // Strip trailing \r\n or \n
-    if line.ends_with("\r\n") {
-        line.truncate(line.len() - 2);
-    } else if line.ends_with('\n') {
-        line.truncate(line.len() - 1);
-    }
+    debug!(client = ?peer_addr, "Connection handler started (async)");
 
-    Ok(line)
-}
+    // Track authentication state for this connection
+    // If auth is not required, start as authenticated
+    let mut is_authenticated = !security.require_auth;
 
-fn resp_parse_err(msg: &str) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, msg)
-}
-
-/// Parse a single RESP frame from the stream
-fn parse_frame(reader: &mut impl BufRead) -> io::Result<RespFrame> {
-    let mut prefix = [0u8; 1];
-    reader.read_exact(&mut prefix)?;
-
-    match prefix[0] {
-        b'+' => {
-            // Simple String
-            let line = read_crlf_line(reader)?;
-            Ok(RespFrame::Simple(line))
-        }
-        b'-' => {
-            // Error
-            let line = read_crlf_line(reader)?;
-            Ok(RespFrame::Error(line))
-        }
-        b':' => {
-            // Integer
-            let line = read_crlf_line(reader)?;
-            let val: i64 = line
-                .parse()
-                .map_err(|_| resp_parse_err("invalid integer"))?;
-            Ok(RespFrame::Integer(val))
-        }
-        b'$' => {
-            // Bulk string
-            let line = read_crlf_line(reader)?;
-            let len: isize = line
-                .parse()
-                .map_err(|_| resp_parse_err("invalid bulk string length"))?;
-
-            if len == -1 {
-                return Ok(RespFrame::Bulk(None)); // Null bulk string
-            }
-
-            if len < 0 {
-                return Err(resp_parse_err("negative bulk string length"));
-            }
-
-            let len = len as usize;
-            let mut buf = vec![0u8; len];
-            reader.read_exact(&mut buf)?;
-
-            // Read and discard trailing CRLF
-            let mut crlf = [0u8; 2];
-            reader.read_exact(&mut crlf)?;
-            if &crlf != b"\r\n" {
-                return Err(resp_parse_err("bulk string missing CRLF"));
-            }
-
-            Ok(RespFrame::Bulk(Some(buf)))
-        }
-        b'*' => {
-            // Array
-            let line = read_crlf_line(reader)?;
-            let len: isize = line
-                .parse()
-                .map_err(|_| resp_parse_err("invalid array length"))?;
-
-            if len == -1 {
-                return Ok(RespFrame::Array(None)); // Null array
-            }
-
-            if len < 0 {
-                return Err(resp_parse_err("negative array length"));
-            }
-
-            let len = len as usize;
-            let mut items = Vec::with_capacity(len);
-            for _ in 0..len {
-                let frame = parse_frame(reader)?;
-                items.push(frame);
-            }
-            Ok(RespFrame::Array(Some(items)))
-        }
-        other => Err(resp_parse_err(&format!(
-            "unknown RESP prefix: {}",
-            other as char
-        ))),
-    }
-}
-
-/// Convert a Bulk or Simple frame into a UTF-8 String
-fn frame_to_string(frame: RespFrame) -> Result<String, String> {
-    match frame {
-        RespFrame::Bulk(Some(bytes)) => {
-            String::from_utf8(bytes).map_err(|_| "ERR invalid UTF-8 in bulk string".to_string())
-        }
-        RespFrame::Simple(s) => Ok(s),
-        _ => Err("ERR expected bulk or simple string".to_string()),
-    }
-}
-
-/// Convert a RESP frame (Array of bulk strings) into ParsedCommand
-fn frame_to_command(frame: RespFrame) -> Result<ParsedCommand, String> {
-    match frame {
-        RespFrame::Array(Some(elems)) if !elems.is_empty() => {
-            let mut iter = elems.into_iter();
-
-            // First element: command name
-            let name_frame = iter.next().unwrap();
-            let name = frame_to_string(name_frame)?.to_uppercase();
-
-            // Rest: args
-            let mut args = Vec::new();
-            for f in iter {
-                args.push(frame_to_string(f)?);
-            }
-
-            Ok(ParsedCommand { name, args })
-        }
-        _ => Err("ERR expected array of bulk strings as command".to_string()),
-    }
-}
-
-fn current_memory_usage(state: &ServerState) -> usize {
-    state.db.values().map(estimate_value_size).sum()
-}
-
-fn evict_if_needed(state: &mut ServerState, protected: Option<&str>) {
-    if state.eviction_policy == EvictionPolicy::NoEviction {
-        return;
-    }
-
-    let mut used = current_memory_usage(state);
-
-    while used > state.max_memory && !state.db.is_empty() {
-        let victim = match state.eviction_policy {
-            EvictionPolicy::AllKeysLFU | EvictionPolicy::AllKeysLRU => state
-                .key_access_count
-                .iter()
-                .filter(|(k, _)| Some(k.as_str()) != protected)
-                .min_by_key(|(_, count)| *count)
-                .map(|(k, _)| k.clone()),
-
-            EvictionPolicy::NoEviction => None,
-        };
-
-        let Some(key) = victim else { break };
-
-        if let Some(val) = state.db.remove(&key) {
-            used -= estimate_value_size(&val);
-        }
-
-        state.key_access_count.remove(&key);
-    }
-}
-
-fn handle_connection(stream: TcpStream, state: SharedState) {
-    let mut reader = BufReader::new(stream.try_clone().expect("failed to clone stream"));
-    let mut response_stream = stream;
+    let mut buf = vec![0u8; 4096];
+    let mut read_buf = Vec::new();
 
     loop {
-        // 1. Parse a RESP frame
-        let frame = match parse_frame(&mut reader) {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
-                println!("client disconnected.");
+        // Read data from socket (async!)
+        let n = match stream.read(&mut buf).await {
+            Ok(0) => {
+                info!(client = ?peer_addr, "Client disconnected");
                 return;
             }
+            Ok(n) => n,
             Err(e) => {
-                eprintln!("Error reading RESP frame: {}", e);
-                let reply = RespReply::Error("protocol error".into());
-                let _ = response_stream.write_all(&reply.to_bytes());
+                if e.kind() != io::ErrorKind::ConnectionReset {
+                    error!(client = ?peer_addr, error = %e, "Error reading from socket");
+                }
                 return;
             }
         };
 
-        // 2. Convert frame -> ParsedCommand
-        let cmd = match frame_to_command(frame) {
-            Ok(c) => c,
-            Err(msg) => {
-                let reply = RespReply::Error(msg);
-                let _ = response_stream.write_all(&reply.to_bytes());
-                continue;
-            }
-        };
+        // Append to read buffer
+        read_buf.extend_from_slice(&buf[..n]);
 
-        println!("Received command: {} {:?}", cmd.name, cmd.args);
-
-        // 3. Execute command (IMPORTANT FIX HERE)
-        // 3. Execute command with timing (NO LOCK HELD HERE)
-        // Take command name BEFORE moving cmd
-        let cmd_name = cmd.name.clone();
-
-        // Execute command (cmd is moved here)
-        let start = Instant::now();
-        let reply = std::panic::catch_unwind(|| process_command(cmd, &state));
-        let duration = start.elapsed().as_nanos();
-
-        let reply = match reply {
-            Ok(r) => r,
-            Err(_) => RespReply::Error("internal error".into()),
-        };
-
-        // Update observability metrics
-        {
-            let mut guard = state.lock().unwrap();
-
-            *guard.command_count.entry(cmd_name.clone()).or_insert(0) += 1;
-            *guard.command_time_ns.entry(cmd_name.clone()).or_insert(0) += duration;
-
-            // Slow log (threshold: 1 ms)
-            if duration > 1_000_000 {
-                if guard.slowlog.len() == 128 {
-                    guard.slowlog.pop_front();
-                }
-                guard.slowlog.push_back(SlowLogEntry {
-                    command: cmd_name,
-                    duration_ns: duration,
-                    timestamp: Instant::now(),
-                });
-            }
-        }
-
-        // 5. Send response
-        let bytes = reply.to_bytes();
-        if response_stream.write_all(&bytes).is_err() {
-            eprintln!("Failed to write to client.");
-            return;
-        }
-    }
-}
-fn start_expiry_thread(state: SharedState) {
-    thread::spawn(move || {
+        // Try to parse frames from buffer
         loop {
-            thread::sleep(Duration::from_millis(100));
+            let mut cursor = Cursor::new(&read_buf);
 
-            let mut guard = state.lock().unwrap();
-            let now = Instant::now();
+            // Try to parse a frame
+            match parse_frame(&mut cursor) {
+                Ok(frame) => {
+                    let consumed = cursor.position() as usize;
 
-            loop {
-                // Step 1: copy the next expiry (ends immutable borrow immediately)
-                let next = match guard.expiries.peek() {
-                    Some(Reverse((t, key))) => (*t, key.clone()),
-                    None => break,
-                };
-
-                // Step 2: stop if not yet expired
-                if next.0 > now {
-                    break;
-                }
-
-                // Step 3: now we can mutate safely
-                guard.expiries.pop();
-                if guard.db.remove(&next.1).is_some() {
-                    guard.key_access_count.remove(&next.1);
-                    guard.expired_count += 1;
-                }
-            }
-        }
-    });
-}
-
-fn is_expired(state: &mut ServerState, key: &str) -> bool {
-    let now = Instant::now();
-    let expired = state
-        .expiries
-        .iter()
-        .any(|Reverse((t, k))| k == key && *t <= now);
-
-    if expired {
-        state.db.remove(key);
-        state.key_access_count.remove(key);
-        state.expired_count += 1;
-    }
-
-    expired
-}
-
-fn estimate_value_size(v: &ValueObject) -> usize {
-    match v {
-        ValueObject::String(s) => s.len(),
-        ValueObject::List(l) => l.iter().map(|s| s.len()).sum(),
-        ValueObject::Set(s) => s.iter().map(|s| s.len()).sum(),
-    }
-}
-
-fn process_command(cmd: ParsedCommand, state: &SharedState) -> RespReply {
-    match cmd.name.as_str() {
-        "PING" => {
-            if cmd.args.is_empty() {
-                RespReply::Simple("PONG".into())
-            } else {
-                RespReply::Simple(cmd.args[0].clone())
-            }
-        }
-
-        "SET" => {
-            if cmd.args.len() < 2 {
-                return RespReply::Error("SET requires key and value".into());
-            }
-
-            let key = &cmd.args[0];
-            let value = &cmd.args[1];
-
-            let mut guard = state.lock().unwrap();
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            // then modify db
-            guard
-                .db
-                .insert(key.clone(), ValueObject::String(value.clone()));
-
-            evict_if_needed(&mut guard, Some(key));
-
-            RespReply::Simple("OK".into())
-        }
-
-        "GET" => {
-            if cmd.args.len() < 1 {
-                return RespReply::Error("GET requires key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                return RespReply::Bulk(None);
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            match guard.db.get(key) {
-                Some(ValueObject::String(v)) => RespReply::Bulk(Some(v.clone())),
-                Some(_) => {
-                    RespReply::Error("WRONGTYPE Operation against wrong kind of value".into())
-                }
-                None => RespReply::Bulk(None),
-            }
-        }
-
-        "DEL" => {
-            if cmd.args.is_empty() {
-                return RespReply::Error("DEL requires at least one key".into());
-            }
-
-            let mut guard = state.lock().unwrap();
-            let mut removed = 0;
-
-            for key in &cmd.args {
-                if guard.db.remove(key).is_some() {
-                    guard.key_access_count.remove(key); // 🔥 ADD THIS
-                    removed += 1;
-                }
-            }
-
-            RespReply::Integer(removed)
-        }
-
-        "EXISTS" => {
-            let mut guard = state.lock().unwrap();
-            let mut count = 0;
-
-            for key in &cmd.args {
-                if !is_expired(&mut guard, key) && guard.db.contains_key(key) {
-                    *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-                    count += 1;
-                }
-            }
-
-            RespReply::Integer(count)
-        }
-
-        "INCR" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("INCR requires one key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                guard
-                    .db
-                    .insert(key.clone(), ValueObject::String("0".into()));
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            let value = guard
-                .db
-                .entry(key.clone())
-                .or_insert_with(|| ValueObject::String("0".into()));
-
-            match value {
-                ValueObject::String(s) => {
-                    let num = match s.parse::<i64>() {
-                        Ok(n) => n,
-                        Err(_) => return RespReply::Error("value is not an integer".into()),
+                    // Convert frame -> ParsedCommand
+                    let cmd = match frame_to_command(frame) {
+                        Ok(c) => c,
+                        Err(msg) => {
+                            warn!(client = ?peer_addr, error = %msg, "Invalid command");
+                            let reply = RespReply::Error(msg);
+                            if stream.write_all(&reply.to_bytes()).await.is_err() {
+                                return;
+                            }
+                            read_buf.drain(..consumed);
+                            continue;
+                        }
                     };
 
-                    let new_val = num + 1;
-                    *s = new_val.to_string();
-                    RespReply::Integer(new_val)
-                }
-                _ => RespReply::Error("WRONGTYPE".into()),
-            }
-        }
+                    debug!(
+                        client = ?peer_addr,
+                        command = %cmd.name,
+                        args = ?cmd.args,
+                        "Processing command"
+                    );
 
-        "DECR" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("DECR requires one key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                guard
-                    .db
-                    .insert(key.clone(), ValueObject::String("0".into()));
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            let value = guard
-                .db
-                .entry(key.clone())
-                .or_insert_with(|| ValueObject::String("0".into()));
-
-            match value {
-                ValueObject::String(s) => {
-                    let num = match s.parse::<i64>() {
-                        Ok(n) => n,
-                        Err(_) => return RespReply::Error("value is not an integer".into()),
-                    };
-
-                    let new_val = num - 1;
-                    *s = new_val.to_string();
-                    RespReply::Integer(new_val)
-                }
-                _ => RespReply::Error("WRONGTYPE".into()),
-            }
-        }
-
-        "LLEN" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("LLEN requires one key".into());
-            }
-
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, &cmd.args[0]) {
-                return RespReply::Integer(0);
-            }
-
-            let key = &cmd.args[0];
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            match guard.db.get(&cmd.args[0]) {
-                Some(ValueObject::List(list)) => RespReply::Integer(list.len() as i64),
-                None => RespReply::Integer(0),
-                _ => RespReply::Error("WRONGTYPE".into()),
-            }
-        }
-
-        "LRANGE" => {
-            if cmd.args.len() != 3 {
-                return RespReply::Error("LRANGE requires key start stop".into());
-            }
-
-            let key = &cmd.args[0];
-            let start: isize = cmd.args[1].parse().unwrap_or(0);
-            let stop: isize = cmd.args[2].parse().unwrap_or(-1);
-
-            let mut guard = state.lock().unwrap();
-            if is_expired(&mut guard, key) {
-                return RespReply::Array(vec![]);
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            let list = match guard.db.get(key) {
-                Some(ValueObject::List(l)) => l,
-                None => return RespReply::Array(vec![]),
-                _ => return RespReply::Error("WRONGTYPE".into()),
-            };
-
-            let len = list.len() as isize;
-            let s = if start < 0 { len + start } else { start }.max(0);
-            let e = if stop < 0 { len + stop } else { stop }.min(len - 1);
-
-            let mut result = Vec::new();
-
-            for (i, val) in list.iter().enumerate() {
-                let i = i as isize;
-                if i >= s && i <= e {
-                    result.push(RespReply::Bulk(Some(val.clone())));
-                }
-            }
-
-            RespReply::Array(result)
-        }
-
-        "LPUSH" => {
-            if cmd.args.len() < 2 {
-                return RespReply::Error("LPUSH requires key and value".into());
-            }
-
-            let key = &cmd.args[0];
-            let value = &cmd.args[1];
-
-            let mut guard = state.lock().unwrap();
-
-            // count access
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            // 👇 limit borrow scope
-            let new_len = {
-                let entry = guard
-                    .db
-                    .entry(key.clone())
-                    .or_insert_with(|| ValueObject::List(LinkedList::new()));
-
-                match entry {
-                    ValueObject::List(list) => {
-                        list.push_front(value.clone());
-                        list.len() as i64
+                    // Check authentication before processing command
+                    let cmd_name_upper = cmd.name.to_uppercase();
+                    
+                    // Handle AUTH command specially
+                    if cmd_name_upper == "AUTH" {
+                        let reply = auth(&cmd, &security.password);
+                        // If AUTH succeeded, mark connection as authenticated
+                        if matches!(reply, RespReply::Simple(ref s) if s == "OK") {
+                            is_authenticated = true;
+                            info!(client = ?peer_addr, "Client authenticated successfully");
+                        } else {
+                            warn!(client = ?peer_addr, "Authentication failed");
+                        }
+                        if stream.write_all(&reply.to_bytes()).await.is_err() {
+                            return;
+                        }
+                        read_buf.drain(..consumed);
+                        continue;
                     }
-                    _ => {
-                        return RespReply::Error(
-                            "WRONGTYPE Operation against wrong kind of value".into(),
+
+                    // Check if command requires authentication
+                    if !is_authenticated && !is_auth_exempt(&cmd_name_upper) {
+                        let reply = RespReply::Error("NOAUTH Authentication required. Use AUTH <password>".into());
+                        if stream.write_all(&reply.to_bytes()).await.is_err() {
+                            return;
+                        }
+                        read_buf.drain(..consumed);
+                        continue;
+                    }
+
+                    // Execute command with timing
+                    let cmd_name = cmd.name.clone();
+                    let is_write = is_write_command(&cmd_name);
+
+                    let start = Instant::now();
+
+                    // Route command - check for schema commands first
+                    let reply = route_command(cmd.clone(), &state, &schema);
+
+                    let duration = start.elapsed();
+
+                    // Log to AOF if write command succeeded (NON-BLOCKING!)
+                    // This is the key optimization - we just send to a channel,
+                    // the actual disk write happens in a background task
+                    if is_write && !matches!(reply, RespReply::Error(_)) {
+                        if let Some(ref writer) = *aof {
+                            writer.log_command(&cmd);
+                        }
+                    }
+
+                    // Log slow commands
+                    let duration_ns = duration.as_nanos();
+                    if duration_ns > 1_000_000 {
+                        warn!(
+                            command = %cmd_name,
+                            duration_ms = duration.as_millis(),
+                            "Slow command detected"
                         );
                     }
-                }
-            }; // <-- entry borrow ENDS HERE
 
-            // now it's safe
-            evict_if_needed(&mut guard, Some(key));
+                    // Update observability metrics (lock-free with DashMap!)
+                    state.inc_command_count(&cmd_name);
+                    state.add_command_time(&cmd_name, duration_ns);
 
-            RespReply::Integer(new_len)
-        }
-
-        "SADD" => {
-            if cmd.args.len() < 2 {
-                return RespReply::Error("SADD requires key and members".into());
-            }
-
-            let key = &cmd.args[0];
-            let members = &cmd.args[1..];
-
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                guard.db.remove(key);
-            }
-
-            // ✅ count write access
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            // 👇 limit borrow scope
-            let added = {
-                let entry = guard
-                    .db
-                    .entry(key.clone())
-                    .or_insert_with(|| ValueObject::Set(HashSet::new()));
-
-                match entry {
-                    ValueObject::Set(s) => {
-                        let mut added = 0;
-                        for m in members {
-                            if s.insert(m.clone()) {
-                                added += 1;
-                            }
-                        }
-                        added
+                    if duration_ns > 1_000_000 {
+                        state.add_slowlog(SlowLogEntry {
+                            command: cmd_name,
+                            duration_ns,
+                            timestamp: Instant::now(),
+                        });
                     }
-                    _ => {
-                        return RespReply::Error("WRONGTYPE".into());
+
+                    // Send response (async!)
+                    let bytes = reply.to_bytes();
+                    if stream.write_all(&bytes).await.is_err() {
+                        error!(client = ?peer_addr, "Failed to write response to client");
+                        return;
                     }
+
+                    // Remove consumed bytes from buffer
+                    read_buf.drain(..consumed);
                 }
-            }; // <-- set borrow ENDS HERE
-
-            // now eviction is safe
-            evict_if_needed(&mut guard, Some(key));
-
-            RespReply::Integer(added)
-        }
-
-        "SREM" => {
-            if cmd.args.len() < 2 {
-                return RespReply::Error("SREM requires key and members".into());
-            }
-
-            let key = &cmd.args[0];
-            let members = &cmd.args[1..];
-
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                return RespReply::Integer(0);
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            match guard.db.get_mut(key) {
-                Some(ValueObject::Set(s)) => {
-                    let mut removed = 0;
-                    for m in members {
-                        if s.remove(m) {
-                            removed += 1;
-                        }
-                    }
-                    RespReply::Integer(removed)
-                }
-                None => RespReply::Integer(0),
-                _ => RespReply::Error("WRONGTYPE".into()),
-            }
-        }
-
-        "SMEMBERS" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("SMEMBERS requires one key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            if is_expired(&mut guard, key) {
-                return RespReply::Array(vec![]);
-            }
-
-            *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-
-            match guard.db.get(key) {
-                Some(ValueObject::Set(s)) => {
-                    let members = s.iter().map(|v| RespReply::Bulk(Some(v.clone()))).collect();
-                    RespReply::Array(members)
-                }
-                None => RespReply::Array(vec![]),
-                _ => RespReply::Error("WRONGTYPE".into()),
-            }
-        }
-
-        "EXPIRE" => {
-            if cmd.args.len() != 2 {
-                return RespReply::Error("EXPIRE requires key and seconds".into());
-            }
-
-            let key = &cmd.args[0];
-            let seconds: u64 = match cmd.args[1].parse() {
-                Ok(s) => s,
-                Err(_) => return RespReply::Error("invalid expire time".into()),
-            };
-
-            let mut state = state.lock().unwrap();
-
-            if !state.db.contains_key(key) {
-                return RespReply::Integer(0);
-            }
-
-            let expire_at = Instant::now() + Duration::from_secs(seconds);
-            state.expiries.push(Reverse((expire_at, key.clone())));
-
-            RespReply::Integer(1)
-        }
-
-        "TTL" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("TTL requires one key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            // Key does not exist
-            if !guard.db.contains_key(key) {
-                return RespReply::Integer(-2);
-            }
-
-            let now = Instant::now();
-            let mut ttl = None;
-
-            for Reverse((t, k)) in guard.expiries.iter() {
-                if k == key {
-                    if *t <= now {
-                        // expired
-                        guard.db.remove(key);
-                        guard.expired_count += 1;
-                        return RespReply::Integer(-2);
-                    }
-                    ttl = Some(t.saturating_duration_since(now).as_secs() as i64);
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    // Need more data
                     break;
                 }
-            }
-
-            match ttl {
-                Some(v) => RespReply::Integer(v),
-                None => RespReply::Integer(-1), // exists but no expiry
-            }
-        }
-
-        "STATS" => {
-            let guard = state.lock().unwrap();
-
-            let mut arr = Vec::new();
-            arr.push(RespReply::Bulk(Some("expired_keys".into())));
-            arr.push(RespReply::Integer(guard.expired_count as i64));
-
-            for (cmd, count) in &guard.command_count {
-                let total_time = guard.command_time_ns.get(cmd).unwrap_or(&0);
-                let avg = if *count > 0 {
-                    total_time / (*count as u128)
-                } else {
-                    0
-                };
-
-                arr.push(RespReply::Bulk(Some(format!("cmd:{}:count", cmd))));
-                arr.push(RespReply::Integer(*count as i64));
-
-                arr.push(RespReply::Bulk(Some(format!("cmd:{}:avg_ns", cmd))));
-                arr.push(RespReply::Integer(avg as i64));
-            }
-
-            RespReply::Array(arr)
-        }
-
-        "HOTKEYS" => {
-            let guard = state.lock().unwrap();
-
-            let mut keys: Vec<_> = guard.key_access_count.iter().collect();
-            keys.sort_by(|a, b| b.1.cmp(a.1));
-
-            let mut result = Vec::new();
-            for (k, v) in keys.into_iter().take(5) {
-                result.push(RespReply::Bulk(Some(k.clone())));
-                result.push(RespReply::Integer(*v as i64));
-            }
-
-            RespReply::Array(result)
-        }
-
-        "MEMORY" => {
-            if cmd.args.len() != 1 {
-                return RespReply::Error("MEMORY requires key".into());
-            }
-
-            let key = &cmd.args[0];
-            let mut guard = state.lock().unwrap();
-
-            // Respect TTL
-            if is_expired(&mut guard, key) {
-                return RespReply::Integer(0);
-            }
-
-            // Count access only if key exists
-            if guard.db.contains_key(key) {
-                *guard.key_access_count.entry(key.clone()).or_insert(0) += 1;
-            }
-
-            match guard.db.get(key) {
-                Some(v) => RespReply::Integer(estimate_value_size(v) as i64),
-                None => RespReply::Integer(0),
-            }
-        }
-
-        "SLOWLOG" => {
-            let guard = state.lock().unwrap();
-            let mut result = Vec::new();
-
-            for entry in guard.slowlog.iter().rev() {
-                result.push(RespReply::Bulk(Some(entry.command.clone())));
-                result.push(RespReply::Integer(entry.duration_ns as i64));
-            }
-
-            RespReply::Array(result)
-        }
-
-        "CONFIG" => {
-            if cmd.args.len() < 2 {
-                return RespReply::Error("CONFIG GET|SET".into());
-            }
-
-            match cmd.args[0].as_str() {
-                "GET" => {
-                    let guard = state.lock().unwrap();
-                    match cmd.args[1].as_str() {
-                        "maxmemory" => RespReply::Integer(guard.max_memory as i64),
-                        "eviction" => RespReply::Bulk(Some(guard.eviction_policy.as_str().into())),
-
-                        _ => RespReply::Bulk(None),
-                    }
+                Err(e) => {
+                    error!(client = ?peer_addr, error = %e, "Error parsing RESP frame");
+                    let reply = RespReply::Error("protocol error".into());
+                    let _ = stream.write_all(&reply.to_bytes()).await;
+                    return;
                 }
-
-                "SET" => {
-                    let mut guard = state.lock().unwrap();
-                    match cmd.args[1].as_str() {
-                        "maxmemory" => {
-                            guard.max_memory = cmd.args[2].parse().unwrap_or(guard.max_memory);
-                            RespReply::Simple("OK".into())
-                        }
-                        "eviction" => {
-                            guard.eviction_policy = match cmd.args[2].as_str() {
-                                "lfu" => EvictionPolicy::AllKeysLFU,
-                                "lru" => EvictionPolicy::AllKeysLRU,
-                                "none" => EvictionPolicy::NoEviction,
-                                _ => return RespReply::Error("unknown eviction policy".into()),
-                            };
-                            RespReply::Simple("OK".into())
-                        }
-                        _ => RespReply::Error("unknown config".into()),
-                    }
-                }
-
-                _ => RespReply::Error("CONFIG GET|SET".into()),
             }
         }
-
-        _ => RespReply::Error("unknown command".into()),
     }
+}
+
+/// Route command to appropriate handler
+fn route_command(cmd: ParsedCommand, state: &SharedState, schema: &SchemaRegistry) -> RespReply {
+    match cmd.name.to_uppercase().as_str() {
+        // Schema commands (unique to RivetDB!)
+        "SCHEMA" => schema_cmd(cmd, schema),
+        "TSET" => tset(cmd, state, schema),
+        "TGET" => tget(cmd, state, schema),
+        "TVALIDATE" => tvalidate(cmd, schema),
+        "TKEYS" => tkeys(cmd, state),
+
+        // JSON commands (native, unlike Redis!)
+        "JSON.SET" => json_set(cmd, state),
+        "JSON.GET" => json_get(cmd, state),
+        "JSON.MGET" => json_mget(cmd, state),
+        "JSON.DEL" => json_del(cmd, state),
+        "JSON.TYPE" => json_type(cmd, state),
+        "JSON.ARRAPPEND" => json_arrappend(cmd, state),
+        "JSON.ARRLEN" => json_arrlen(cmd, state),
+        "JSON.OBJKEYS" => json_objkeys(cmd, state),
+        "JSON.OBJLEN" => json_objlen(cmd, state),
+        "JSON.NUMINCRBY" => json_numincrby(cmd, state),
+
+        // All other commands go to standard processor
+        _ => process_command(cmd, state),
+    }
+}
+
+/// Async expiry loop - runs as a background task (DashMap version)
+async fn run_expiry_loop(state: SharedState) {
+    use std::time::Duration;
+    use tokio::time::interval;
+
+    let mut ticker = interval(Duration::from_millis(100));
+
+    loop {
+        ticker.tick().await;
+
+        let now = Instant::now();
+
+        // Check and expire keys from the expiry heap
+        // Need to lock just the expiry heap (BinaryHeap needs mutex)
+        loop {
+            let next_key = if let Ok(mut expiries) = state.expiries.lock() {
+                match expiries.peek() {
+                    Some(Reverse((expires_at, _))) if *expires_at <= now => {
+                        let entry = expiries.pop().unwrap();
+                        Some(entry.0.1) // Get the key
+                    }
+                    _ => None,
+                }
+            } else {
+                None
+            };
+
+            match next_key {
+                Some(key) => {
+                    // Remove from DashMap (lock-free!)
+                    if state.check_and_expire(&key) {
+                        debug!(key = %key, "Key expired");
+                    }
+                }
+                None => break,
+            }
+        }
+    }
+}
+
+/// Initialize tracing subscriber with specified log level
+fn init_logging(level: &str) {
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::EnvFilter;
+
+    let filter = EnvFilter::try_from_default_env()
+        .or_else(|_| EnvFilter::try_new(level))
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
+        .init();
 }
