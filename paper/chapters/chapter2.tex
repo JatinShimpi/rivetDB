@@ -1,0 +1,100 @@
+% ============================================================
+% CHAPTER 2: LITERATURE SURVEY
+% ============================================================
+\customchapter{Literature Survey}
+
+The design and architecture of modern in-memory data storage systems reside at the intersection of several complex sub-fields in computer science. This chapter provides a comprehensive review of the 10 foundational research papers and system architectures that motivated the development of RivetDB. We survey the evolution of in-memory database architectures, index structure designs, concurrency control paradigms, asynchronous I/O frameworks, and the paradigm-shifting emergence of memory-safe systems programming languages.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{ganttchart}[
+        x unit=0.8cm,
+        y unit title=0.8cm,
+        y unit chart=0.8cm,
+        vgrid,
+        time slot format=isodate-year,
+        time slot unit=year,
+        title label font=\bfseries\footnotesize,
+        bar label font=\footnotesize,
+        group label font=\bfseries\footnotesize,
+        bar/.style={fill=cyan!50, draw=blue!70, thick},
+        bar height=0.5,
+        group right shift=0,
+        group top shift=0.6,
+        group height=.2,
+        group peaks width={0.2}
+    ]{1995}{2026}
+    \gantttitle{Evolution of In-Memory Data Stores}{32} \\
+    \gantttitlecalendar{year} \\
+    
+    \ganttgroup{Disk-Based}{1995}{2010} \\
+    \ganttbar{PostgreSQL}{1996}{2010} \\
+    \ganttbar{MySQL}{1995}{2010} \\
+    
+    \ganttgroup{In-Memory Caching}{2003}{2026} \\
+    \ganttbar{Memcached}{2003}{2020} \\
+    \ganttbar{Redis (Single Thread)}{2009}{2026} \\
+    
+    \ganttgroup{Modern IMDBs}{2025}{2026} \\
+    \ganttbar{RivetDB}{2025}{2026}
+    \end{ganttchart}
+    }
+    \caption{Evolution of Database Architectures and Concurrency Paradigms}
+    \label{fig:lit_review_timeline}
+\end{figure}
+
+\section{Review of Foundational Research Papers}
+
+\subsection{Paper 1: An Overview of Main-Memory Database Systems [1]}
+\textbf{Authors}: Larson and Levandoski
+\textbf{Summary}: This seminal paper details how plummeting RAM costs made it economically feasible to hold entire working datasets in main memory. It proves that simply taking a traditional disk-based database and running it with a massive buffer pool does not yield optimal performance. Traditional systems still incur massive CPU overhead executing buffer pool management logic, lock manager synchronization, and translating logical records to physical disk page offsets.
+\textbf{Contribution to RivetDB}: We adopted their fundamental conclusion to avoid heavy buffer-pool architectures entirely. This led us to design a pure in-memory engine from the ground up, completely free from legacy disk-page translation overhead.
+
+\subsection{Paper 2: The Memory Wall and The Case for Memory-Centric Systems [2]}
+\textbf{Authors}: Chronis et al.
+\textbf{Summary}: This research identifies the "Memory Wall"—the growing disparity between CPU processing speed and memory access latency. It argues that while modern CPUs execute instructions in less than a nanosecond, fetching data from main memory takes over 100 nanoseconds. Therefore, modern databases must optimize for CPU cache locality and access patterns, not merely avoid disk access.
+\textbf{Contribution to RivetDB}: This research profoundly influenced our architectural choices. It dictated the decision to use localized, sharded data structures (like DashMap) to maximize CPU L1/L2 cache coherence and minimize false sharing across multi-core systems.
+
+\subsection{Paper 3: Replicated and Partitioned Layouts for In-Memory Systems [3]}
+\textbf{Authors}: Sudhir, Cafarella, and Madden
+\textbf{Summary}: This paper evaluates the performance of different index layouts in memory. It demonstrates that traditional global lock hash tables suffer severe lock contention in multi-threaded environments. It proves that partitioning data (sharding) drastically reduces cross-core cache invalidations and lock queuing delays.
+\textbf{Contribution to RivetDB}: We directly implemented their partitioning concepts by utilizing the \texttt{DashMap} crate. We applied fine-grained lock striping instead of global locking to drastically reduce thread contention, allowing near-linear scaling across CPU cores.
+
+\subsection{Paper 4: Concurrency Control in Distributed Database Systems [4]}
+\textbf{Authors}: Bernstein and Goodman
+\textbf{Summary}: A foundational survey that categorizes concurrency control into Pessimistic (acquiring locks before modification) and Optimistic (modifying in private workspaces and validating before commit). It outlines the trade-offs: pessimistic locking causes thread starvation, while optimistic locking causes high abort rates under heavy contention.
+\textbf{Contribution to RivetDB}: This paper provided the theoretical framework for analyzing how our command execution engine should handle concurrent writes. We opted for a granular pessimistic approach, realizing that if locks are small enough (shard level), the starvation problem is mitigated.
+
+\subsection{Paper 5: A Survey of Concurrency Control Mechanisms [5]}
+\textbf{Authors}: Graefe
+\textbf{Summary}: A follow-up analysis revisiting concurrency paradigms on modern multi-core hardware. It shows that hybrid approaches often yield the best results by blending read-write latches with optimistic reads.
+\textbf{Contribution to RivetDB}: Influenced by Graefe's hybrid approach, we designed our storage engine to use pessimistic read-write (\texttt{RwLock}) locks at a highly granular level. The probability of two threads contending for the exact same shard lock is minimal, giving it performance characteristics akin to an optimistic model.
+
+\subsection{Paper 6: The Case for Event-Driven Servers [6]}
+\textbf{Authors}: Ousterhout
+\textbf{Summary}: This paper argues against the traditional "thread-per-connection" model for high-performance network servers. It highlights that OS threads are resource-intensive and context-switching overhead destroys performance. It advocates for event-driven, non-blocking I/O state machines.
+\textbf{Contribution to RivetDB}: This literature led us to completely abandon the thread-per-connection model in favor of the Tokio asynchronous event-driven runtime. By multiplexing thousands of lightweight tasks onto a few OS threads, RivetDB can handle massive concurrent connections without memory exhaustion.
+
+\subsection{Paper 7: Redis Core Architecture and Single-Threaded Design [7]}
+\textbf{Authors}: Salvatore Sanfilippo (Redis Creator / Labs)
+\textbf{Summary}: While not a traditional academic paper, the architectural documentation of Redis serves as a critical case study. Redis uses a strictly single-threaded event loop. This guarantees absolute consistency and atomic execution without complex locking, but bounds the performance to a single CPU core.
+\textbf{Contribution to RivetDB}: We analyzed Redis's architecture to understand its limitations. While we adopted its rich data structure support (Lists, Sets, Sorted Sets), we actively engineered our system to break its single-thread bottleneck, proving that multi-threading can be achieved without sacrificing safety.
+
+\subsection{Paper 8: Distributed Caching Architectures (Memcached) [8]}
+\textbf{Authors}: Fitzpatrick
+\textbf{Summary}: A study on the architecture of Memcached, a multi-threaded, volatile cache. Memcached scales linearly with CPU cores by using a thread pool and global locking mechanisms. However, it only stores simple byte arrays and has zero capability for durability or complex querying.
+\textbf{Contribution to RivetDB}: We utilized Memcached as a baseline for measuring multi-core scalability. We aimed to build a system that matches Memcached's linear thread scaling while vastly exceeding its feature set.
+
+\subsection{Paper 9: The Rust Language and Ownership Model [9]}
+\textbf{Authors}: Matsakis and Klock
+\textbf{Summary}: A formal review detailing how the Rust programming language revolutionized safe systems programming. Rust introduces the concept of Ownership and the Borrow Checker, guaranteeing at compile-time that a value can either have one mutable reference or infinite immutable references, but never both.
+\textbf{Contribution to RivetDB}: The formal proofs of memory safety without garbage collection overhead in this paper solidified our choice of Rust. We utilized its ownership model to achieve "Fearless Concurrency" in our database engine.
+
+\subsection{Paper 10: RustBelt: Securing the Foundations of the Rust Language [10]}
+\textbf{Authors}: Jung et al.
+\textbf{Summary}: This highly influential paper provides a formal mathematical proof of the safety guarantees provided by Rust's type system, specifically focusing on how it safely encapsulates \texttt{unsafe} code blocks used in core libraries like crossbeam and standard concurrency primitives.
+\textbf{Contribution to RivetDB}: This paper provided the confidence needed to utilize lock-free concurrent queues (like \texttt{crossbeam} channels) for our asynchronous AOF persistence layer. Knowing the foundations were mathematically proven safe allowed us to build aggressive multi-threaded logging pipelines without fear of data corruption.
+
+\section{Conclusion of Literature Survey}
+The literature and existing industrial solutions highlight a clear architectural gap. Developers are forced to choose between the safety and features of single-threaded Redis, or the multi-core scalability of feature-poor Memcached. Furthermore, the reliance on C/C++ perpetuates critical vulnerabilities in data infrastructure. RivetDB was conceived specifically to address this gap by leveraging Rust's compile-time safety and a concurrent hash map architecture to provide a multi-threaded, feature-rich, and provably memory-safe database.

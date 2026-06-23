@@ -55,18 +55,16 @@
   }
 }
 
-% Define frontmatter style (Certificate onwards — show Roman page number)
+% Define frontmatter style (for abstract, TOC, etc. - EMPTY)
 \fancypagestyle{frontmatter}{
   \fancyhf{}
-  \fancyfoot[C]{\fontsize{10}{12}\selectfont \thepage}
   \renewcommand{\headrulewidth}{0pt}
   \renewcommand{\footrulewidth}{0pt}
 }
 
-% Force LaTeX's default 'plain' style to also show Roman page number (TOC, LOF, LOT)
+% Force LaTeX's default 'plain' style to match frontmatter (for TOC, LOF, LOT - EMPTY)
 \fancypagestyle{plain}{
   \fancyhf{}
-  \fancyfoot[C]{\fontsize{10}{12}\selectfont \thepage}
   \renewcommand{\headrulewidth}{0pt}
   \renewcommand{\footrulewidth}{0pt}
 }
@@ -110,7 +108,7 @@
   \end{center}
   \vspace*{\fill}
   \clearpage
-  \vspace*{-24pt}
+  \vspace*{-14pt}
   {\centering \fontsize{12}{14}\selectfont\textbf{\MakeUppercase{#1}}\par}
   \addvspace{14pt}
 }
@@ -124,58 +122,51 @@
 % TITLE PAGE (I)
 % ============================================================
 \begin{titlepage}
-\thispagestyle{empty} % No page number on title page itself
+\thispagestyle{empty} % No header/footer on title page
 \begin{center}
+\vspace*{1cm}
+{\fontsize{12}{14}\selectfont \textbf{A}} \\
+{\fontsize{12}{14}\selectfont \textbf{PROJECT REPORT ON}} \\
+{\fontsize{14}{16}\selectfont \textcolor{cyan}{\textbf{``RIVETDB: A CONCURRENT, FEATURE-RICH IN-MEMORY DATABASE IN RUST WITH BUILT-IN TIME-SERIES, SQL QUERY, AND MULTI-TENANCY SUPPORT''}}} \\
+\vspace{0.8cm}
 
-% ---- TOP: A PROJECT REPORT ON (each word on its own line) ----
-{\fontsize{12}{15}\selectfont\textbf{A}} \\[3pt]
-{\fontsize{12}{15}\selectfont\textbf{PROJECT}} \\[3pt]
-{\fontsize{12}{15}\selectfont\textbf{REPORT}} \\[3pt]
-{\fontsize{12}{15}\selectfont\textbf{ON}} \\[0.7cm]
+{\fontsize{10}{12}\selectfont \textbf{SUBMITTED TO THE SAVITRIBAI PHULE PUNE}} \\
+{\fontsize{10}{12}\selectfont \textbf{UNIVERSITY, PUNE IN THE PARTIAL FULFILLMENT FOR}} \\
+{\fontsize{10}{12}\selectfont \textbf{THE AWARD OF THE DEGREE}} \\
+{\fontsize{10}{12}\selectfont \textbf{OF}} \\
+\vspace{0.8cm}
 
-% ---- PROJECT TITLE ----
-{\fontsize{14}{18}\selectfont\textcolor{cyan}{\textbf{``RIVETDB: A CONCURRENT, FEATURE-RICH\\[4pt]
-IN-MEMORY DATABASE IN RUST WITH\\[4pt]
-BUILT-IN TIME-SERIES, SQL QUERY,\\[4pt]
-AND MULTI-TENANCY SUPPORT''}}}
+{\fontsize{14}{16}\selectfont \textbf{BACHELOR OF ENGINEERING}} \\
+{\fontsize{14}{16}\selectfont \textbf{(ELECTRONICS AND TELECOMMUNICATION)}} \\
+\vspace{0.8cm}
 
-\vspace*{\fill}
-
-% ---- MIDDLE: Submission details ----
-{\fontsize{10}{13}\selectfont\textbf{SUBMITTED TO THE SAVITRIBAI PHULE PUNE}} \\
-{\fontsize{10}{13}\selectfont\textbf{UNIVERSITY, PUNE IN THE PARTIAL FULFILLMENT FOR}} \\
-{\fontsize{10}{13}\selectfont\textbf{THE AWARD OF THE DEGREE}} \\
-{\fontsize{10}{13}\selectfont\textbf{OF}} \\[0.5cm]
-
-{\fontsize{14}{16}\selectfont\textbf{BACHELOR OF ENGINEERING}} \\
-{\fontsize{14}{16}\selectfont\textbf{(ELECTRONICS AND TELECOMMUNICATION)}} \\[0.5cm]
-
-{\fontsize{12}{14}\selectfont\textbf{BY}} \\[0.3cm]
+{\fontsize{12}{14}\selectfont \textbf{BY}} \\
+\vspace{0.5cm}
 
 \begin{tabular}{c@{\hspace{2cm}}c}
-{\fontsize{12}{14}\selectfont\textbf{Name of Student}} & {\fontsize{12}{14}\selectfont\textbf{Exam Seat No.}} \\[0.4\baselineskip]
-\textbf{Mr. Jatin Shimpi}  & \textbf{B400570214} \\
-\textbf{Mr. Ayan Shaikh}   & \textbf{B400570185} \\
-\textbf{Mr. Rahul Polas}   & \textbf{B400570189} \\
-\textbf{Ms. Gauri Shinde}  & \textbf{B400570211} \\
-\end{tabular} \\[0.5cm]
+{\fontsize{12}{14}\selectfont \textbf{Name of Student}} & {\fontsize{12}{14}\selectfont \textbf{Exam Seat No.}} \\[0.5\baselineskip]
+\textbf{Mr. Jatin Shimpi} & \textbf{B400570214} \\
+\textbf{Mr. Ayan Shaikh} & \textbf{B400570185} \\
+\textbf{Mr. Rahul Polas} & \textbf{B400570189} \\
+\textbf{Ms. Gauri Shinde} & \textbf{B400570211} \\
+\end{tabular}
+\vspace{0.8cm}
 
-{\fontsize{10}{12}\selectfont\textbf{UNDER THE GUIDANCE OF}} \\
-{\fontsize{12}{14}\selectfont\textbf{Prof. Swati B. Gholap}} \\[0.5cm]
+{\fontsize{10}{12}\selectfont \textbf{UNDER THE GUIDANCE OF}} \\
+{\fontsize{12}{14}\selectfont \textbf{Prof. Swati B. Gholap}} \\
+\vspace{0.8cm}
 
-\includegraphics[height=2.5cm]{sits_logo.png} \\[0.3cm]
+\includegraphics[height=2.5cm]{sits_logo.png} \\
+\vspace{0.4cm}
 
-{\fontsize{14}{16}\selectfont\textbf{Sinhgad Institutes}} \\[0.3cm]
+{\fontsize{14}{16}\selectfont \textbf{Sinhgad Institutes}} \\
+\vspace{0.5cm}
 
-{\fontsize{12}{14}\selectfont\textbf{DEPARTMENT OF E\&TC ENGINEERING STES'S}} \\
-{\fontsize{12}{14}\selectfont\textbf{SINHGAD INSTITUTE OF TECHNOLOGY \& SCIENCE}} \\
-{\fontsize{12}{14}\selectfont\textbf{NARHE PUNE 411041}}
-
-\vspace*{\fill}
-
-% ---- BOTTOM: Academic Year pinned at very bottom ----
-{\fontsize{12}{14}\selectfont\textbf{AY 2025-2026}}
-
+{\fontsize{12}{14}\selectfont \textbf{DEPARTMENT OF E\&TC ENGINEERING STES'S}} \\
+{\fontsize{12}{14}\selectfont \textbf{SINHGAD INSTITUTE OF TECHNOLOGY \& SCIENCE}} \\
+{\fontsize{12}{14}\selectfont \textbf{NARHE PUNE 411041}} \\
+\vspace{0.5cm}
+{\fontsize{10}{12}\selectfont \textbf{2025-2026}}
 \end{center}
 \end{titlepage}
 
@@ -184,7 +175,7 @@ AND MULTI-TENANCY SUPPORT''}}}
 % CERTIFICATE (II)
 % ============================================================
 \newpage
-% Certificate page inherits frontmatter pagestyle — shows Roman page number
+\thispagestyle{empty} % No header/footer on certificate page
 \begin{center}
 {\fontsize{14}{16}\selectfont \textbf{CERTIFICATE}} \\[1.5\baselineskip]
 {\fontsize{12}{14}\selectfont This is to certify that the project report entitled} \\[0.5\baselineskip]

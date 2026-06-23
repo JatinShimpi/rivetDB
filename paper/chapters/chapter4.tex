@@ -1,0 +1,288 @@
+% ============================================================
+% CHAPTER 4: IMPLEMENTATION
+% ============================================================
+\customchapter{Implementation}
+
+This chapter details the technical implementation of RivetDB. We present the core data structures and asynchronous event loops, demonstrating how Rust's type system and concurrency primitives were leveraged to achieve the system's objectives. Code snippets are extracted directly from the RivetDB source code.
+
+\section{The Tokio Asynchronous Network Loop}
+
+The entry point of RivetDB relies on the Tokio asynchronous runtime. To handle tens of thousands of concurrent connections without exhausting system memory via thread stacks, RivetDB spawns an asynchronous task for every incoming connection.
+
+\begin{lstlisting}[language=C, caption=Tokio Connection Acceptor Loop (\texttt{src/main.rs})]
+// Accept connections (async loop)
+loop {
+    match listener.accept().await {
+        Ok((stream, addr)) => {
+            let state_clone = Arc::clone(&state);
+            let aof_clone = Arc::clone(&aof_writer);
+            let schema_clone = Arc::clone(&schema_registry);
+
+            // Spawn async task (not an OS thread!)
+            // This is the key benefit: thousands of concurrent connections with minimal memory footprint
+            tokio::spawn(async move {
+                handle_connection(stream, state_clone, aof_clone, schema_clone).await;
+            });
+        }
+        Err(e) => {
+            error!(error = %e, "Failed to accept connection");
+        }
+    }
+}
+\end{lstlisting}
+
+Notice the use of \texttt{Arc} (Atomic Reference Count). Because Rust's compiler strictly enforces ownership, we cannot simply pass the \texttt{state} object to multiple concurrent tasks. \texttt{Arc} allows multiple tasks to safely share ownership of the \texttt{ServerState} struct, ensuring it is only dropped from memory when the very last connection closes.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=2.5cm,
+        actor/.style={draw, rectangle, minimum width=3cm, minimum height=0.8cm, fill=gray!10},
+        arrow/.style={-stealth, thick},
+        line/.style={thick, dashed}
+    ]
+    
+    % Actors
+    \node[actor] (Client) {Client};
+    \node[actor, right=of Client] (Tokio) {Tokio Event Loop};
+    \node[actor, right=of Tokio] (Worker) {Worker Task};
+    
+    % Lifelines
+    \draw[line] (Client.south) -- ++(0,-6);
+    \draw[line] (Tokio.south) -- ++(0,-6);
+    \draw[line] (Worker.south) -- ++(0,-6);
+    
+    % Messages
+    \draw[arrow] ([yshift=-1cm]Client.south) -- node[above, font=\footnotesize] {Connect (TCP)} ([yshift=-1cm]Tokio.south);
+    \draw[arrow] ([yshift=-2cm]Tokio.south) -- node[above, font=\footnotesize] {\texttt{tokio::spawn(handle\_client)}} ([yshift=-2cm]Worker.south);
+    \draw[arrow] ([yshift=-3cm]Client.south) -- node[above, font=\footnotesize] {Send \texttt{SET} Command} ([yshift=-3cm]Worker.south);
+    \draw[arrow] ([yshift=-4cm]Worker.south) -- ++(1,0) -- ++(0,-0.5) -- node[right, font=\footnotesize] {Parse RESP} ++(-1,0);
+    \draw[arrow] ([yshift=-4.7cm]Worker.south) -- ++(1,0) -- ++(0,-0.5) -- node[right, font=\footnotesize] {Execute against DashMap} ++(-1,0);
+    \draw[arrow] ([yshift=-5.6cm]Worker.south) -- node[above, font=\footnotesize] {Send \texttt{+OK} Response} ([yshift=-5.6cm]Client.south);
+    
+    \end{tikzpicture}
+    \caption{Tokio Network Event Loop Sequence Diagram}
+    \label{fig:network_sequence_diagram}
+\end{figure}
+
+\section{The Core Storage Engine: DashMap}
+
+The primary data store is defined in \texttt{src/storage/state.rs}. Traditional concurrent hashmaps lock the entire map during a write. RivetDB utilizes \texttt{DashMap}, which implements fine-grained lock striping.
+
+\begin{lstlisting}[language=C, caption=ServerState Struct Definition]
+pub struct ServerState {
+    // The core concurrent hash map. Notice there is no global Mutex.
+    pub db: DashMap<String, ValueObject>,
+    
+    // Expiry heap - needs Mutex as BinaryHeap is not concurrent
+    pub expiries: Mutex<ExpiryHeap>,
+    
+    // Memory tracking
+    pub max_memory: usize,
+    pub eviction_policy: EvictionPolicy,
+    
+    // Observability metrics - use DashMap for concurrent access
+    pub command_count: DashMap<String, u64>,
+    pub command_time_ns: DashMap<String, u128>,
+    pub key_access_count: DashMap<String, u64>,
+    
+    // Slowlog - needs Mutex for VecDeque operations
+    pub slowlog: Mutex<VecDeque<SlowLogEntry>>,
+}
+\end{lstlisting}
+
+When a \texttt{SET} command is executed, RivetDB does not lock the entire \texttt{store}. Instead, \texttt{DashMap} hashes the key and locks only the specific shard where the key resides. This allows parallel \texttt{SET} operations on different keys.
+
+\section{Data Types Implementation}
+
+RivetDB supports 8 distinct data types. Each is encapsulated in the \texttt{ValueObject} enum, leveraging Rust's powerful algebraic data types.
+
+\begin{lstlisting}[language=C, caption=The ValueObject Enum (src/storage/value.rs)]
+pub enum ValueObject {
+    String(String),
+    List(LinkedList<String>),
+    Set(HashSet<String>),
+    ZSet(ZSet),
+    Hash(HashMap<String, String>),
+    Json(serde_json::Value),
+    BloomFilter(RivetBloomFilter),
+    TimeSeries(TimeSeries),
+}
+\end{lstlisting}
+
+This enum-based design forces the compiler to exhaustively check that every command handler (like \texttt{LPUSH} for Lists) correctly handles cases where a user accidentally tries to run a List command on a String key. The type safety prevents runtime crashes common in C implementations.
+
+\subsection{Time-Series Implementation Detail}
+To achieve high-performance range queries on time-series data, RivetDB encapsulates a \texttt{BTreeMap} alongside tracking metadata.
+
+\begin{lstlisting}[language=C, caption=Time-Series Data Structure (\texttt{src/storage/timeseries.rs})]
+pub struct TimeSeriesData {
+    // Maps Unix Timestamp -> Value
+    pub data: BTreeMap<u64, f64>,
+    pub max_samples: Option<usize>,
+    pub retention_ms: Option<u64>,
+}
+\end{lstlisting}
+
+When \texttt{TS.ADD} is called, the value is inserted into the \texttt{BTreeMap}. If a \texttt{retention\_ms} is configured, a background sweep purges any entries older than the retention limit, preventing boundless memory growth for continuous sensor feeds.
+
+\section{Asynchronous AOF Persistence}
+
+A naive implementation of Append-Only File (AOF) persistence would \texttt{fsync} to disk inside the network event loop, crippling throughput. RivetDB completely decouples disk I/O using mpsc (multi-producer, single-consumer) channels.
+
+\begin{lstlisting}[language=C, caption=Asynchronous AOF Logging (\texttt{src/persistence/aof.rs})]
+// Inside handle_connection()
+let reply = route_command(cmd.clone(), &state, &schema);
+
+// Log to AOF if write command succeeded (NON-BLOCKING!)
+if is_write && !matches!(reply, RespReply::Error(_)) {
+    if let Some(ref writer) = *aof {
+        // This is an in-memory channel send. It takes nanoseconds.
+        writer.log_command(&cmd); 
+    }
+}
+\end{lstlisting}
+
+The \texttt{log\_command} method simply sends a message across a multi-producer, single-consumer (mpsc) channel. A dedicated background OS thread continually drains this channel, buffering writes into a 64KB \texttt{BufWriter}, and executing \texttt{fsync} system calls only based on the user-defined policy (e.g., Everysec).
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tikzpicture}[
+        node distance=0.5cm and 1.5cm,
+        worker/.style={draw, rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center},
+        chan/.style={draw, circle, minimum width=1.5cm, align=center},
+        bg/.style={draw, rectangle, minimum width=3cm, minimum height=1cm, align=center},
+        buf/.style={draw, rectangle, dashed, minimum width=3cm, minimum height=0.8cm, align=center},
+        disk/.style={draw, cylinder, shape border rotate=90, aspect=0.25, minimum width=2.5cm, minimum height=1.5cm, align=center},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[worker] (W2) {Worker Task 2};
+    \node[worker, above=of W2] (W1) {Worker Task 1};
+    \node[worker, below=of W2] (W3) {Worker Task 3};
+    
+    \node[chan, right=of W2] (Chan) {MPSC\\Channel};
+    
+    \node[bg, right=of Chan] (BgThread) {Background\\OS Thread};
+    \node[buf, right=of BgThread] (BufWriter) {64KB BufWriter};
+    \node[disk, right=1.5cm of BufWriter] (Disk) {Disk fsync};
+    
+    \draw[arrow] (W1.east) -- (Chan);
+    \draw[arrow] (W2.east) -- (Chan);
+    \draw[arrow] (W3.east) -- (Chan);
+    
+    \draw[arrow] (Chan) -- (BgThread);
+    \draw[arrow] (BgThread) -- (BufWriter);
+    \draw[arrow] (BufWriter) -- node[above, font=\footnotesize, align=center] {Every 1\\Second} (Disk);
+    
+    \end{tikzpicture}
+    }
+    \caption{Asynchronous AOF Writer Pipeline via Channels}
+    \label{fig:aof_pipeline}
+\end{figure}
+
+\section{The SQL Parsing Engine}
+
+RivetDB embeds a SQL execution engine capable of scanning the \texttt{DashMap} using predicates.
+
+\begin{lstlisting}[language=C, caption=SQL Lexer and Execution Logic (\texttt{src/commands/sql.rs})]
+// 1. Lexical Analysis
+let tokens = lexer::tokenize("SELECT id, name WHERE age > 25");
+let ast = parser::parse(tokens)?;
+
+// 2. Execution Logic
+pub fn execute_select(ast: &SelectQuery, state: &ServerState) -> RespReply {
+    let mut results = Vec::new();
+    
+    // 3. Concurrently iterate over DashMap
+    for entry in state.store.iter() {
+        let key = entry.key();
+        let value = entry.value();
+        
+        // 4. Evaluate WHERE predicates
+        if evaluate_where_clause(&ast.where_clause, key, value) {
+            results.push(format_row(key, value, &ast.select_columns));
+        }
+    }
+    
+    RespReply::Array(results)
+}
+\end{lstlisting}
+
+Because \texttt{DashMap} allows concurrent iteration while other threads are mutating disjoint shards, this table scan does not bring the database to a halt. The \texttt{evaluate\_where\_clause} function dynamically checks the type of the \texttt{Value} enum and attempts to coerce fields for comparison.
+
+\section{Memory Eviction Policies}
+
+To prevent Out-Of-Memory (OOM) crashes, RivetDB implements configurable eviction policies: \texttt{allkeys-lfu}, \texttt{allkeys-lru}, and \texttt{noeviction}. Memory usage is estimated by iterating the \texttt{DashMap} and summing the size of each \texttt{ValueObject} via a dedicated \texttt{estimate\_value\_size} function.
+
+When memory pressure hits the \texttt{max\_memory} threshold, the eviction loop scans the \texttt{key\_access\_count} DashMap to find the key with the lowest access frequency. This key is evicted from both the main data store and the access count tracker. The loop repeats until memory drops below the threshold. A \texttt{protected} key parameter ensures the key that triggered the eviction (typically the key just written) is never itself evicted.
+
+\section{RESP Protocol Parser Implementation}
+
+RivetDB implements a full Redis Serialization Protocol (RESP) parser in \texttt{src/protocol/frame.rs}. The parser reads raw bytes from the TCP socket buffer and constructs typed frames.
+
+\subsection{Frame Types}
+The parser handles five RESP data types:
+\begin{itemize}[leftmargin=2.5em]
+    \item \textbf{Simple Strings} (\texttt{+OK\textbackslash r\textbackslash n}): Used for success responses.
+    \item \textbf{Errors} (\texttt{-ERR message\textbackslash r\textbackslash n}): Used for error responses.
+    \item \textbf{Integers} (\texttt{:1000\textbackslash r\textbackslash n}): Used for numeric responses like \texttt{INCR}.
+    \item \textbf{Bulk Strings} (\texttt{\$6\textbackslash r\textbackslash nfoobar\textbackslash r\textbackslash n}): Binary-safe strings with length prefix.
+    \item \textbf{Arrays} (\texttt{*2\textbackslash r\textbackslash n...}): Used for commands and multi-value responses.
+\end{itemize}
+
+\subsection{Incremental Parsing}
+The parser uses a cursor-based approach over the read buffer. This allows incremental parsing when the TCP socket delivers partial packets. If the parser encounters an unexpected end-of-file (EOF), it returns an error signaling that more data is needed, and the connection handler appends subsequent reads to the buffer before retrying. This design prevents memory copies and allows zero-allocation parsing for most commands.
+
+\section{JSON Document Commands}
+
+RivetDB provides 10 native JSON commands, implemented in \texttt{src/commands/json.rs} (19KB). Unlike Redis, which requires the commercial RedisJSON module, these are built directly into the core binary.
+
+\begin{itemize}[leftmargin=2.5em]
+    \item \texttt{JSON.SET <key> <path> <json>}: Sets a JSON value at a specific JSONPath within the document tree. Creates the key if it does not exist.
+    \item \texttt{JSON.GET <key> [path]}: Retrieves the JSON value at the specified path. If no path is given, returns the entire document.
+    \item \texttt{JSON.MGET <key1> <key2> ... <path>}: Multi-key GET operation, returning the value at the given path across multiple keys in a single round-trip.
+    \item \texttt{JSON.DEL <key> <path>}: Deletes a specific path within the JSON document without removing the entire key.
+    \item \texttt{JSON.TYPE <key> <path>}: Returns the JSON type (string, number, object, array, boolean, null) at the specified path.
+    \item \texttt{JSON.ARRAPPEND <key> <path> <value>}: Appends an element to a JSON array at the specified path.
+    \item \texttt{JSON.ARRLEN <key> <path>}: Returns the length of a JSON array.
+    \item \texttt{JSON.OBJKEYS <key> <path>}: Returns all keys of a JSON object at the specified path.
+    \item \texttt{JSON.OBJLEN <key> <path>}: Returns the number of keys in a JSON object.
+    \item \texttt{JSON.NUMINCRBY <key> <path> <number>}: Atomically increments a numeric value within the JSON document.
+\end{itemize}
+
+Internally, JSON documents are stored as \texttt{serde\_json::Value} trees. Path traversal leverages the \texttt{jsonpath-rust} crate, which implements the JSONPath specification for querying nested structures. This allows clients to surgically mutate deeply nested fields (e.g., \texttt{JSON.SET user:1 \$.address.city "Mumbai"}) without serializing and deserializing the entire document.
+
+\section{Bloom Filter Implementation}
+
+Bloom Filters are implemented in \texttt{src/storage/bloom.rs} and \texttt{src/commands/bloom.rs}. A Bloom Filter is a space-efficient probabilistic data structure that can definitively determine if an element is \textit{not} in a set, while accepting a configurable false-positive rate.
+
+RivetDB wraps the \texttt{bloomfilter} crate, exposing the following commands:
+\begin{itemize}[leftmargin=2.5em]
+    \item \texttt{BF.RESERVE <key> <error\_rate> <capacity>}: Creates a new Bloom Filter with a target false-positive rate and expected element capacity.
+    \item \texttt{BF.ADD <key> <item>}: Inserts an element into the filter.
+    \item \texttt{BF.EXISTS <key> <item>}: Tests membership. Returns 1 (probably exists) or 0 (definitely does not exist).
+    \item \texttt{BF.MADD <key> <item1> ... <itemN>}: Bulk insertion of multiple elements.
+    \item \texttt{BF.MEXISTS <key> <item1> ... <itemN>}: Bulk membership testing.
+    \item \texttt{BF.INFO <key>}: Returns the filter's capacity, current count, and memory usage in bytes.
+\end{itemize}
+
+The primary use case is deduplication and cache-miss prevention. For example, an e-commerce system can store all valid coupon codes in a Bloom Filter. When a user submits a code, \texttt{BF.EXISTS} instantly determines if the code is invalid (with 100\% certainty) without querying the primary database, reducing load by orders of magnitude.
+
+\section{Sorted Set (ZSet) Implementation}
+
+Sorted Sets are implemented in \texttt{src/storage/zset.rs} (10KB) using a dual-structure approach. Every member is stored in both a \texttt{HashMap<String, f64>} (for $O(1)$ score lookups) and a \texttt{BTreeMap<OrderedFloat<f64>, HashSet<String>>} (for $O(\log N)$ range queries by score).
+
+The key commands include:
+\begin{itemize}[leftmargin=2.5em]
+    \item \texttt{ZADD <key> <score> <member>}: Inserts or updates a member's score in both the HashMap and BTreeMap simultaneously.
+    \item \texttt{ZSCORE <key> <member>}: Returns the score via direct HashMap lookup in $O(1)$.
+    \item \texttt{ZRANGE <key> <start> <stop>}: Returns members ordered by score using BTreeMap iteration in $O(\log N + M)$.
+    \item \texttt{ZRANGEBYSCORE <key> <min> <max>}: Returns all members with scores within the specified range.
+    \item \texttt{ZREM <key> <member>}: Removes from both structures atomically.
+    \item \texttt{ZCARD <key>}: Returns the cardinality (total number of members).
+    \item \texttt{ZRANK <key> <member>}: Returns the rank (position) of a member when ordered by score.
+\end{itemize}
+
+The \texttt{OrderedFloat} wrapper from the \texttt{ordered-float} crate is critical here: standard IEEE 754 floating-point numbers do not implement Rust's \texttt{Ord} trait (because \texttt{NaN != NaN}), so they cannot be used as \texttt{BTreeMap} keys. \texttt{OrderedFloat} wraps \texttt{f64} with a total ordering that treats \texttt{NaN} as equal to itself, enabling sorted storage.

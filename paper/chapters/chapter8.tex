@@ -1,0 +1,100 @@
+% ============================================================
+% CHAPTER 8: CONCLUSION AND FUTURE SCOPE
+% ============================================================
+\customchapter{Conclusion and Future Scope}
+
+This chapter summarizes the key findings and contributions of the RivetDB project and outlines the roadmap for future development towards a production-ready, distributed system.
+
+\section{Conclusion}
+
+This project has successfully demonstrated the design, implementation, and rigorous benchmarking of RivetDB, a concurrent, memory-safe, and highly scalable in-memory database. By leveraging the Rust programming language, RivetDB fundamentally overcomes the long-standing architectural trade-offs inherent in legacy C-based systems like Redis and Memcached.
+
+The core conclusions drawn from this project are:
+
+\begin{enumerate}[leftmargin=2.5em]
+    \item \textbf{Concurrent Throughput is Superior for Independent Operations}: The use of \texttt{DashMap} for lock-striped, sharded memory access allowed RivetDB to outperform Redis by 42.8\% on atomic read-modify-write operations (\texttt{INCR}) in non-pipelined workloads. This proves that unlocking multi-core processing for independent data access yields massive dividends over single-threaded event loops.
+    
+    \item \textbf{Memory Safety without Garbage Collection}: Building the system in Rust eliminated entire classes of security vulnerabilities. We achieved zero-cost abstractions, avoiding data races and use-after-free errors at compile time, demonstrating that modern databases no longer need to rely on unsafe C code to achieve microsecond latencies.
+    
+    \item \textbf{Feature Unification}: We successfully integrated 8 native data types, including Time-Series and JSON documents, alongside a native SQL query parsing engine, infinite multi-tenant namespaces, and a JSON Schema validation registry. This eliminates the operational headache of managing separate commercial plugins, providing a holistic ``batteries-included'' platform for developers.
+    
+    \item \textbf{Asynchronous Persistence is Viable}: Implementing the Append-Only File (AOF) writer using mpsc channels successfully decoupled disk I/O from the network loop. Buffer tuning (expanding to 64KB) brought write-path performance to acceptable levels without blocking the Tokio runtime.
+    
+    \item \textbf{Production-Grade Observability}: The embedded Prometheus metrics server, slow query log, and hot-key detection system provide operators with comprehensive visibility into system behavior without requiring external monitoring agents. This ``observability-first'' design philosophy ensures that RivetDB can be deployed in production environments with confidence.
+    
+    \item \textbf{Configuration-Driven Deployment}: The layered TOML configuration system with CLI argument overrides enables the same compiled binary to be deployed across development, staging, and production environments, aligning with modern DevOps and Twelve-Factor App practices.
+\end{enumerate}
+
+RivetDB establishes that modern systems languages can redefine the design space for high-performance data infrastructure.
+
+\section{Future Scope}
+
+While the current iteration of RivetDB is highly functional and performant for single-node deployments, several critical enhancements are necessary to elevate it to a production-ready, enterprise-grade distributed system.
+
+\subsection{Distributed Clustering and Consensus}
+Currently, RivetDB is bound by the memory limits of a single host machine. The next major architectural phase involves horizontal scaling through data sharding across multiple nodes. This requires implementing a consensus algorithm, specifically the \textbf{Raft Consensus Protocol}, to manage leader election, log replication, and automatic failover in the event of node crashes.
+
+\subsection{Write Path Pipelining Optimization}
+As observed in the benchmarking results, RivetDB's pipelined \texttt{SET} performance lags significantly behind Redis due to lock acquisition and channel-passing overhead for every individual command. A future optimization will involve implementing "Batch Command Processing." If a client sends a pipeline of 16 commands, the Tokio task should acquire the necessary shard locks once, mutate all keys, and send a single batched message to the AOF channel, rather than looping 16 discrete times.
+
+\subsection{Security and Access Control Lists (ACL)}
+While the system currently supports simple password authentication via the \texttt{AUTH} command, production environments require granular security. We plan to implement full Access Control Lists (ACL), allowing administrators to define users with specific permissions (e.g., User A can only execute \texttt{GET} commands on keys matching the pattern \texttt{metrics:*}). Additionally, integration with \texttt{rustls} is required to provide native TLS encryption for data-in-transit.
+
+\subsection{RDB Snapshot Persistence}
+Currently, RivetDB relies solely on AOF persistence. Over time, an AOF log grows indefinitely and takes a long time to replay on startup. We will implement point-in-time Snapshotting (similar to Redis RDB files). This will serialize the entire \texttt{DashMap} into a compact binary file at configured intervals, allowing much faster system recovery.
+
+\subsection{Pub/Sub Messaging Subsystem}
+Many applications use Redis not just for data storage, but for real-time messaging. Implementing the Publish/Subscribe (Pub/Sub) pattern will allow clients to subscribe to specific channels and receive instantaneous asynchronous push notifications when other clients publish messages, unlocking use-cases like real-time chat servers and event-driven microservices.
+
+\subsection{Query Optimizer with Secondary Indexing}
+The current SQL engine performs naive full-table scans for every query. A future enhancement will introduce a cost-based query optimizer that can analyze \texttt{WHERE} clause predicates and select optimal execution plans. Secondary indexes built on B-Tree structures would allow the engine to jump directly to matching keys for equality and range predicates, reducing query time from $O(N)$ to $O(\log N)$ for indexed fields.
+
+\subsection{TLS Encryption for Data-in-Transit}
+Integration with the \texttt{rustls} library will provide native TLS 1.3 encryption for all client-server communication. This is essential for deployments in cloud environments where network traffic traverses shared infrastructure. Unlike OpenSSL, \texttt{rustls} is written entirely in Rust, maintaining the memory-safety guarantees of the entire stack.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{\textwidth}{!}{
+    \begin{tikzpicture}[
+        node distance=0cm and 0cm,
+        phase/.style={draw, rectangle, rounded corners, minimum width=3.8cm, minimum height=1.1cm, align=center, font=\small},
+        arrow/.style={-stealth, thick, draw=gray!70},
+        label/.style={font=\bfseries\footnotesize}
+    ]
+
+    % Phase 1 - Near Term
+    \node[phase, fill=cyan!20,   draw=blue!60]  (P1) at (0,0)     {Batch Write\\Pipelining};
+    \node[phase, fill=cyan!20,   draw=blue!60]  (P2) at (4.2,0)   {RDB Snapshot\\Persistence};
+    \node[phase, fill=orange!20, draw=orange!60](P3) at (8.4,0)   {ACL \& TLS\\Security};
+    \node[phase, fill=orange!20, draw=orange!60](P4) at (12.6,0)  {Pub/Sub\\Messaging};
+    \node[phase, fill=green!20,  draw=green!60] (P5) at (16.8,0)  {Query Optimizer\\\& Indexing};
+    \node[phase, fill=green!20,  draw=green!60] (P6) at (21.0,0)  {Distributed\\Raft Clustering};
+
+    % Arrows between phases
+    \draw[arrow] (P1.east) -- (P2.west);
+    \draw[arrow] (P2.east) -- (P3.west);
+    \draw[arrow] (P3.east) -- (P4.west);
+    \draw[arrow] (P4.east) -- (P5.west);
+    \draw[arrow] (P5.east) -- (P6.west);
+
+    % Timeline labels
+    \node[label, below=0.5cm of P1] {Near-Term};
+    \node[label, below=0.5cm of P2] {Near-Term};
+    \node[label, below=0.5cm of P3] {Mid-Term};
+    \node[label, below=0.5cm of P4] {Mid-Term};
+    \node[label, below=0.5cm of P5] {Long-Term};
+    \node[label, below=0.5cm of P6] {Long-Term};
+
+    % Legend
+    \fill[cyan!20,  draw=blue!60]   (-0.5,-2.2) rectangle (0.5,-1.7);
+    \node[right, font=\footnotesize] at (0.6,-1.95) {Near-Term Optimizations};
+    \fill[orange!20, draw=orange!60] (5.5,-2.2) rectangle (6.5,-1.7);
+    \node[right, font=\footnotesize] at (6.6,-1.95) {Mid-Term Features};
+    \fill[green!20,  draw=green!60]  (12,-2.2) rectangle (13,-1.7);
+    \node[right, font=\footnotesize] at (13.1,-1.95) {Long-Term Architecture};
+
+    \end{tikzpicture}
+    }
+    \caption{RivetDB Future Development Roadmap}
+    \label{fig:roadmap_diagram}
+\end{figure}

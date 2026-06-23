@@ -50,6 +50,19 @@ Cargo.lock
 *~
 .DS_Store
 
+# LaTeX synctex
+*.synctex*
+
 # Project specific
 *.aof
 *.rdb
+
+# Node
+paper/node_modules/
+paper/package-lock.json
+
+# Duplicate paper build directory
+paper/report/
+
+# Build artifacts / archives
+rivetDb.zip

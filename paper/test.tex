@@ -1,0 +1,27 @@
+\documentclass{article}
+\usepackage{fancyhdr}
+\usepackage{lipsum}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[C]{Header}
+\fancyfoot[C]{Footer}
+
+\renewcommand{\headrule}{%
+  \hrule height 2pt width \headwidth
+  \vspace{1.5pt}%
+  \hrule height 0.5pt width \headwidth
+  \vspace{-4pt}%
+}
+
+\renewcommand{\footrule}{%
+  \vspace{-4pt}%
+  \hrule height 0.5pt width \headwidth
+  \vspace{1.5pt}%
+  \hrule height 2pt width \headwidth
+  \vspace{4pt}%
+}
+
+\begin{document}
+\lipsum[1-5]
+\end{document}

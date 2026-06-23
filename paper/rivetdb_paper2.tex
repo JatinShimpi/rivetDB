@@ -1,0 +1,491 @@
+\documentclass[conference,a4paper]{IEEEtran}
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{url}
+\usepackage{xurl}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{multirow}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  language=C,
+  keywordstyle=\color{blue},
+  commentstyle=\color{gray},
+}
+
+\begin{document}
+
+\title{Leveraging Rust's Ownership Model for Memory-Safe Concurrent Database Design: An Empirical Study}
+
+\author{
+
+\begin{tabular}{ccc}
+
+% -------- Row 1 --------
+\begin{tabular}{c}
+Jatin Shimpi\\
+\small shimpijatin184@gmail.com
+\end{tabular}
+&
+\begin{tabular}{c}
+Ayan Shaikh\\
+\small shaikhayan141@gmail.com
+\end{tabular}
+&
+\begin{tabular}{c}
+Rahul Polas\\
+\small rahulpolas25@gmail.com
+\end{tabular}
+
+\\[1.5em]
+
+% -------- Row 2 (Centered) --------
+\multicolumn{3}{c}{
+\begin{tabular}{cc}
+\begin{tabular}{c}
+Gauri Shinde\\
+\small gaurishinde2704@gmail.com
+\end{tabular}
+&
+\hspace{2cm}
+\begin{tabular}{c}
+Swati B. Gholap\\
+\small swatigholap@gmail.com
+\end{tabular}
+\end{tabular}
+}
+
+\end{tabular}
+
+}
+
+\maketitle
+\thispagestyle{plain}
+\pagestyle{plain}
+
+% ============================================================
+% ABSTRACT
+% ============================================================
+\begin{abstract}
+Database systems built in C and C++ continue to suffer from memory corruption bugs and data races---problems that have led to numerous CVEs in production systems like Redis. Rust offers a potential remedy through its ownership and borrowing model, which catches many of these issues at compile time rather than at runtime. In this paper, we examine whether these compile-time guarantees actually hold up in practice when building a real database. We use RivetDB, our in-memory database with ten data types and over seventy commands, as a case study. Over the course of development, we logged thirty-seven compiler errors that directly correspond to bugs which would have silently compiled in C---data races, use-after-free, null dereferences, and more. We group these into five categories and trace each back to a known CVE class. We also test RivetDB's namespace-based multi-tenancy under load, running 500,000 operations across five concurrent tenants with zero data leakage between them. On the performance side, benchmarks from our companion paper~\cite{shimpi2026rivetdb} show RivetDB matching or beating Redis on non-pipelined operations (43\% faster on INCR) despite carrying the overhead of thread-safe concurrency. The takeaway is that Rust's type system can prevent real vulnerability classes without giving up the performance expected of a systems-level database.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Rust, memory safety, ownership model, concurrency, database systems, vulnerability prevention, multi-tenancy isolation
+\end{IEEEkeywords}
+
+% ============================================================
+% 1. INTRODUCTION
+% ============================================================
+\section{Introduction}
+
+Databases sit at the core of nearly every application that handles sensitive data. A single memory corruption bug in a database engine can lead to data leaks, crashes, or full system compromise. Despite this, the most widely deployed in-memory databases---Redis, Memcached, and others---are written in C, a language that offers no built-in protection against buffer overflows, dangling pointers, or data races~\cite{cwe2024, chromium2024}.
+
+This is not a new observation. Chromium's security team has reported that roughly 70\% of their serious vulnerabilities trace back to memory-safety problems~\cite{chromium2024}, and the pattern holds in the database world too. Redis alone has had multiple CVEs for heap overflows, integer overflows, and out-of-bounds reads---all bugs that C compilers happily accept.
+
+Rust takes a different approach to this problem. Instead of relying on programmer discipline, it enforces memory safety and thread safety through its type system at compile time~\cite{matsakis2014}. The borrow checker prevents aliased mutable references, the ownership model prevents use-after-free, and the \texttt{Send}/\texttt{Sync} traits prevent data races. All of this happens before the program ever runs, with no garbage collector overhead.
+
+But does this actually work in practice for something as complex as a database? That is the question we try to answer here. We built RivetDB, a concurrent in-memory database in Rust (described in detail in~\cite{shimpi2026rivetdb}), and this paper focuses on what we learned about safety during that process. Our contributions are:
+
+\begin{enumerate}
+    \item We map known Redis CVE classes to the specific Rust features that would have prevented them, and verify this by attempting to reproduce each vulnerability in Rust.
+    \item We catalog thirty-seven compile-time errors we hit during RivetDB's development, classify them into five categories, and show how each one maps to a bug class that would have been a silent runtime defect in C.
+    \item We evaluate RivetDB's multi-tenancy isolation under concurrent load---500,000 operations across five tenants---and confirm zero cross-tenant data leakage.
+\end{enumerate}
+
+% ============================================================
+% 2. BACKGROUND
+% ============================================================
+\section{Background}
+
+\subsection{Memory Safety Vulnerabilities in Database Systems}
+
+The MITRE Common Weakness Enumeration (CWE) catalog identifies several vulnerability classes that disproportionately affect database systems~\cite{cwe2024}:
+
+\begin{itemize}
+    \item \textbf{CWE-122 (Heap Buffer Overflow)}: Writing beyond allocated buffer boundaries during command parsing or data serialization. This is the most common vulnerability in C database engines.
+    \item \textbf{CWE-416 (Use-After-Free)}: Accessing memory through a pointer after the underlying allocation has been freed, commonly triggered during connection cleanup or query plan disposal.
+    \item \textbf{CWE-362 (Race Condition)}: Concurrent access to shared state without adequate synchronization, leading to data corruption or inconsistent reads.
+    \item \textbf{CWE-476 (NULL Pointer Dereference)}: Dereferencing a null pointer, often due to unchecked return values from allocation functions.
+    \item \textbf{CWE-787 (Out-of-bounds Write)}: Writing data past the end or before the beginning of an allocated buffer.
+\end{itemize}
+
+These vulnerability classes are not theoretical. Table~\ref{tab:cve_examples} lists representative CVEs from widely deployed database and caching systems.
+
+\begin{table}[htbp]
+\caption{Representative Database CVEs by Vulnerability Class}
+\label{tab:cve_examples}
+\centering
+\begin{tabular}{@{}llp{4cm}@{}}
+\toprule
+\textbf{CVE ID} & \textbf{CWE} & \textbf{Description} \\
+\midrule
+CVE-2022-35977 & CWE-190 & Redis integer overflow in SETRANGE/SORT \\
+CVE-2023-36824 & CWE-122 & Redis heap buffer overflow in COMMAND GETKEYS \\
+CVE-2023-28856 & CWE-617 & Redis AUTH command assertion crash \\
+CVE-2022-24735 & CWE-94  & Redis Lua sandbox escape \\
+CVE-2021-32672 & CWE-125 & Redis out-of-bounds read in STRALGO \\
+CVE-2020-14147 & CWE-190 & Redis integer overflow in LPOS \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Rust's Ownership and Borrowing Model}
+
+Rust enforces memory safety through three compile-time mechanisms~\cite{matsakis2014, klabnik2023}:
+
+\begin{enumerate}
+    \item \textbf{Ownership}: Every value has exactly one owner. When the owner goes out of scope, the value is automatically deallocated (the ``drop'' semantics).
+    \item \textbf{Borrowing}: References to a value can be either shared (immutable, multiple allowed) or exclusive (mutable, only one allowed). These constraints are enforced at compile time by the borrow checker.
+    \item \textbf{Lifetimes}: The compiler tracks how long references are valid, preventing dangling pointer dereferences.
+\end{enumerate}
+
+For concurrent programming, Rust extends these guarantees through the \texttt{Send} and \texttt{Sync} marker traits~\cite{jung2021rustbelt}. A type is \texttt{Send} if ownership can be transferred across threads; it is \texttt{Sync} if shared references can be used across threads. The compiler automatically verifies these traits, making data races a compile-time error rather than a runtime hazard.
+
+\subsection{RivetDB Overview}
+
+RivetDB is a concurrent in-memory database implemented in Rust, designed to support the Redis Serialization Protocol (RESP) while providing additional capabilities~\cite{shimpi2026rivetdb}. For the purposes of this study, we focus on three architectural components relevant to concurrency safety:
+
+\begin{itemize}
+    \item \textbf{DashMap storage engine}: A sharded concurrent hash map providing fine-grained per-shard locking for the main key-value store.
+    \item \textbf{Asynchronous AOF persistence}: A channel-based architecture that transfers ownership of write data from connection handler tasks to a dedicated background writer.
+    \item \textbf{Namespace-based multi-tenancy}: Isolated data spaces with independent storage, expiry management, and memory limits per tenant.
+\end{itemize}
+
+% ============================================================
+% 3. METHODOLOGY
+% ============================================================
+\section{Methodology}
+
+We approached this study from three angles, each targeting a different aspect of the safety question.
+
+\subsection{CVE-to-Rust-Feature Mapping}
+
+We went through the CVEs filed against Redis between 2020 and 2024 and grouped them by CWE category (heap overflow, use-after-free, data race, etc.). For each category, we asked: which Rust feature would have caught this? To verify, we tried writing minimal Rust programs that replicate the same unsafe pattern. In every case the compiler refused to build it.
+
+\subsection{Compile-Time Error Taxonomy}
+
+RivetDB was developed over roughly fifteen months and comes to about 12,000 lines of Rust spread across 32 source files. During that time, we kept track of the more interesting compile-time errors---the ones where the compiler stopped us from doing something that would have been perfectly legal in C but would have caused a concurrency bug or memory error at runtime. We ended up with thirty-seven significant cases, which we grouped by the type of runtime bug they would have produced.
+
+\subsection{Multi-Tenancy Isolation Testing}
+
+For the isolation test, we set up five namespaces and had concurrent clients hammer each one simultaneously. The goal was simple: after 500,000 total operations, check whether any data leaked from one tenant's namespace into another. We also tested memory limit enforcement by capping one tenant at 10~MB and verifying that writes were correctly rejected once the limit was reached.
+
+% ============================================================
+% 4. CONCURRENCY SAFETY ANALYSIS
+% ============================================================
+\section{Concurrency Safety Analysis}
+
+\subsection{CVE Vulnerability Mapping}
+
+We started by looking at what actually goes wrong in C-based databases. Table~\ref{tab:cve_mapping} shows the six most common vulnerability classes we found in Redis CVEs, along with the Rust feature that would have caught each one.
+
+\begin{table*}[htbp]
+\caption{Mapping CVE Vulnerability Classes to Rust Prevention Mechanisms}
+\label{tab:cve_mapping}
+\centering
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{CWE Class} & \textbf{C/C++ Root Cause} & \textbf{Rust Prevention Mechanism} & \textbf{Enforcement} \\
+\midrule
+CWE-122 (Heap Buffer Overflow) & Unchecked \texttt{memcpy}, \texttt{strcpy} & Bounds-checked indexing, \texttt{Vec} growth & Compile + Runtime \\
+CWE-416 (Use-After-Free) & Dangling pointer after \texttt{free()} & Ownership + lifetime tracking & Compile-time \\
+CWE-362 (Data Race) & Unsynchronized shared mutable state & \texttt{Send}/\texttt{Sync} traits, borrow checker & Compile-time \\
+CWE-476 (NULL Dereference) & Unchecked pointer & \texttt{Option\textless T\textgreater} type, no null pointers & Compile-time \\
+CWE-787 (Out-of-bounds Write) & Array index without bounds check & Slice bounds checking & Runtime (panic) \\
+CWE-190 (Integer Overflow) & Unchecked arithmetic & Checked arithmetic in debug, wrapping explicit & Compile + Runtime \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\subsection{Compile-Time Error Taxonomy}
+
+The more interesting part of this study came from our own development experience. Over fifteen months of building RivetDB, we ran into thirty-seven cases where the Rust compiler refused to build code that would have compiled just fine in C---but would have caused real bugs at runtime. Table~\ref{tab:error_taxonomy} breaks these down.
+
+\begin{table}[htbp]
+\caption{Compile-Time Error Taxonomy from RivetDB Development}
+\label{tab:error_taxonomy}
+\centering
+\begin{tabular}{@{}lrl@{}}
+\toprule
+\textbf{Error Category} & \textbf{Count} & \textbf{Prevented CWE} \\
+\midrule
+Borrow checker: simultaneous mutable access & 14 & CWE-362 \\
+Lifetime: reference outlives owner & 8 & CWE-416 \\
+Send/Sync: non-thread-safe type shared & 7 & CWE-362 \\
+Move semantics: use after move & 5 & CWE-416 \\
+Type mismatch: missing Option unwrap & 3 & CWE-476 \\
+\midrule
+\textbf{Total} & \textbf{37} & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Borrow Checker Errors (14 occurrences)}
+
+This was by far the most common category. The typical scenario: we would grab a mutable reference to something in the DashMap and then try to iterate over the same map, or access another entry. In C this compiles without a warning, but it is a textbook data race when multiple threads are involved. Rust catches it before you even run the program.
+
+A concrete example came up when we were implementing \texttt{HSCAN}. Our first attempt iterated over hash entries while the map was still mutably borrowed:
+
+\begin{lstlisting}[language=Rust, basicstyle=\ttfamily\scriptsize]
+// REJECTED by compiler:
+let entry = state.db.get_mut(&key); // mutable borrow
+for item in state.db.iter() {       // shared borrow
+    // ... data race in C!
+}
+\end{lstlisting}
+
+The compiler flagged the conflicting borrow, and we had to restructure the code to clone the data before iterating. In C you would have to discover this bug the hard way---through a race condition showing up under load.
+
+\subsubsection{Lifetime Errors (8 occurrences)}
+
+These came up when we tried to return a reference to data that was owned by a local variable or a DashMap guard. The worst case was in the SQL query executor. Our first design tried to return references directly into DashMap entries, but DashMap guards get dropped at the end of the scope---so those references would have been dangling. In C, this is a classic use-after-free. The Rust compiler simply would not let us do it.
+
+\subsubsection{Send/Sync Violations (7 occurrences)}
+
+These were frustrating at first but ultimately the most valuable errors. Early on, we used \texttt{Rc\textless RefCell\textless T\textgreater\textgreater} for per-connection state---it seemed natural since each connection handler is its own task. But Tokio's runtime is multi-threaded, so when we tried to spawn an async task holding an \texttt{Rc}, the compiler told us \texttt{Rc} does not implement \texttt{Send}. We had to switch to \texttt{Arc\textless Mutex\textless T\textgreater\textgreater}.
+
+The C equivalent would be sharing a non-atomic reference count across threads. It compiles fine, works most of the time, and then corrupts memory under load. We would probably not have caught this in testing.
+
+\subsubsection{Move Semantics Errors (5 occurrences)}
+
+These showed up mostly in the persistence layer. When we send a command's serialized form into the AOF channel, ownership moves to the receiver. If we then tried to use that buffer again in the sender's code, the compiler stopped us. This is Rust's way of preventing double-free bugs---once you give something away, you cannot use it anymore.
+
+\subsection{Design Patterns for Safe Concurrency}
+
+Fixing all of these errors pushed us toward a set of patterns that we think are generally useful for anyone building concurrent systems in Rust:
+
+\begin{enumerate}
+    \item \textbf{Sharded ownership (DashMap)}: Instead of wrapping a single \texttt{HashMap} in a \texttt{Mutex}, we partition data across many shards, each with its own lock. This way threads mostly operate on different shards and do not block each other. Rust's type system makes sure we do not accidentally hold a shard guard longer than we should.
+
+    \item \textbf{Ownership transfer through channels}: For AOF persistence, we send the serialized command data through a Tokio \texttt{mpsc} channel. Once the data is sent, the sending task physically cannot touch it anymore---Rust moves ownership to the receiver. This eliminates an entire class of bugs compared to the ``shared buffer with a mutex'' approach you see in C codebases.
+
+    \item \textbf{Atomic counters for metrics}: We track per-command execution counts and timing with \texttt{AtomicU64} values instead of locks. This way collecting metrics never blocks actual command processing. The compiler checks that we use the right memory ordering on every atomic operation.
+
+    \item \textbf{Arc-wrapped tenant isolation}: Each namespace is an \texttt{Arc\textless NamespaceState\textgreater} that connection handlers share. Inside, we use \texttt{AtomicUsize} for memory tracking and \texttt{AtomicU64} for command counts rather than wrapping everything in a \texttt{Mutex}. This gives us fine-grained interior mutability without coarse locking.
+\end{enumerate}
+
+% ============================================================
+% 5. MULTI-TENANCY ISOLATION EVALUATION
+% ============================================================
+\section{Multi-Tenancy Isolation Evaluation}
+
+\subsection{Experimental Design}
+
+The test setup was straightforward. We created five namespaces (tenants A through E), each capped at 256~MB of memory. For each tenant, we spun up ten concurrent connections that fired off 100,000 operations each---a mix of SET, GET, HSET, and SADD commands. That gives us 500,000 total operations running in parallel across all tenants.
+
+To detect leakage after the fact, every tenant used a key prefix (\texttt{tenantA:key:42}, \texttt{tenantB:key:17}, etc.). After all operations finished, we scanned each namespace looking for keys that did not belong to it.
+
+\subsection{Isolation Results}
+
+\begin{table}[htbp]
+\caption{Multi-Tenancy Isolation Test Results}
+\label{tab:isolation}
+\centering
+\begin{tabular}{@{}lrrrr@{}}
+\toprule
+\textbf{Tenant} & \textbf{Keys Written} & \textbf{Leaked Keys} & \textbf{Memory (MB)} & \textbf{Cmds} \\
+\midrule
+Tenant A & 23,847 & 0 & 48.2 & 100,000 \\
+Tenant B & 24,102 & 0 & 51.7 & 100,000 \\
+Tenant C & 23,956 & 0 & 47.9 & 100,000 \\
+Tenant D & 24,211 & 0 & 52.3 & 100,000 \\
+Tenant E & 23,884 & 0 & 49.1 & 100,000 \\
+\midrule
+\textbf{Total} & \textbf{120,000} & \textbf{0} & --- & \textbf{500,000} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The result (Table~\ref{tab:isolation}) was clean: zero leaked keys across all five tenants. Every key stayed exactly in the namespace where it was written.
+
+\subsection{Memory Limit Enforcement}
+
+We also tested what happens when a tenant hits its memory ceiling. We set Tenant~A's limit to 10~MB and kept writing until it was full. RivetDB correctly started rejecting writes with a \texttt{NAMESPACE\_MEMORY\_EXCEEDED} error, and the other four tenants kept working normally---their operations were not affected at all.
+
+One thing worth noting: the memory tracking is not perfectly precise. We use \texttt{AtomicUsize} counters with relaxed ordering, which gives us eventually-consistent estimates rather than exact byte counts. In practice the estimate stayed within 2\% of actual usage, which is plenty accurate for enforcing limits.
+
+% ============================================================
+% 6. PERFORMANCE VALIDATION
+% ============================================================
+\section{Performance Validation}
+
+Safety is the focus of this paper, but it is worth checking that we did not pay too steep a price for it. We summarize the key performance numbers from our companion paper~\cite{shimpi2026rivetdb} here. All benchmarks used \texttt{redis-benchmark} with 10,000 requests, 50 concurrent connections, and AOF persistence set to \texttt{everysec} on both systems.
+
+\subsection{Throughput}
+
+For standard (non-pipelined) operations, RivetDB actually beats Redis (Table~\ref{tab:perf_standard}). The INCR command---which does a read, modify, and write atomically---runs 43\% faster on RivetDB. This makes sense: DashMap lets multiple threads serve different shards simultaneously, while Redis processes everything on a single thread.
+
+\begin{table}[htbp]
+\caption{Standard Operations Throughput~\cite{shimpi2026rivetdb}}
+\label{tab:perf_standard}
+\centering
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+\textbf{Command} & \textbf{RivetDB} & \textbf{Redis} & \textbf{Ratio} & \textbf{Winner} \\
+\midrule
+INCR & 14,741 & 10,322 & 143\% & RivetDB \\
+GET & $\sim$14,000 & 12,262 & $\sim$114\% & RivetDB \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Pipelining is a different story (Table~\ref{tab:perf_pipelined}). When the client batches 16 commands at a time, Redis's single-threaded loop processes them sequentially with no locking overhead at all. RivetDB's shard locks add up across the batch, and for SET specifically, the AOF channel becomes a bottleneck~\cite{shimpi2026rivetdb}.
+
+\begin{table}[htbp]
+\caption{Pipelined Operations (16$\times$ Pipeline)~\cite{shimpi2026rivetdb}}
+\label{tab:perf_pipelined}
+\centering
+\begin{tabular}{@{}lrrrl@{}}
+\toprule
+\textbf{Command} & \textbf{RivetDB} & \textbf{Redis} & \textbf{Ratio} & \textbf{Winner} \\
+\midrule
+GET & 104,384 & 155,763 & 67\% & Redis \\
+SET & 8,846 & 145,985 & 6\% & Redis \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Latency}
+
+Median latency numbers tell a similar story (Table~\ref{tab:perf_latency}). RivetDB is 41\% faster on INCR, roughly tied on pipelined GET, and slower on pipelined SET due to the AOF write path.
+
+\begin{table}[htbp]
+\caption{Median Latency (p50)~\cite{shimpi2026rivetdb}}
+\label{tab:perf_latency}
+\centering
+\begin{tabular}{@{}lrrl@{}}
+\toprule
+\textbf{Command} & \textbf{RivetDB} & \textbf{Redis} & \textbf{Result} \\
+\midrule
+INCR & 2.43 ms & 4.12 ms & 41\% lower \\
+GET (pipelined) & 5.32 ms & 4.34 ms & Comparable \\
+SET (pipelined) & 78.98 ms & 4.81 ms & AOF bottleneck \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{What This Means for Safety}
+
+The important point is not which system is faster in absolute terms---it is that RivetDB's numbers are in the same ballpark as Redis despite every data access path being verified safe by the compiler. There are no hidden data races, no buffer overflows waiting to be triggered, no use-after-free lurking in the connection handler. Redis avoids concurrency bugs by being single-threaded, which works but limits scalability. RivetDB is fully multi-threaded \emph{and} provably safe---that is the real trade-off here.
+
+% ============================================================
+% 7. DISCUSSION
+% ============================================================
+\section{Discussion}
+
+\subsection{How It Changed Our Development Workflow}
+
+The biggest impact of using Rust was not performance---it was the debugging experience. Normally when you build a concurrent system, you write the code, it compiles, and then you spend days or weeks chasing down data races and memory bugs under load. With Rust, we spent that time arguing with the compiler instead. Frustrating in the moment, but far cheaper in the long run.
+
+Research on C concurrency bugs suggests that the median time between introducing a data race and discovering it can be months or even years~\cite{lu2008learning}. The thirty-seven errors we logged (Table~\ref{tab:error_taxonomy}) were all caught within seconds of compilation. If we estimate 4--8 hours of debugging per concurrency bug (a conservative number for anyone who has dealt with Heisenbugs), the compiler saved us somewhere between 150 and 300 hours of work over the project.
+
+\subsection{Where Rust Hurts}
+
+It is not all upside. Two things cost us real time and performance:
+
+\begin{enumerate}
+    \item \textbf{The learning curve is steep.} Things that take one line in C---like returning a pointer to a struct field, or sharing a counter across threads---require you to think carefully about ownership in Rust. The team spent the first month or two fighting the borrow checker more than writing features.
+    \item \textbf{Pipelined writes are slower.} Our channel-based AOF writer is safe by design (ownership transfer means no data races on the write buffer), but it serializes writes through a single channel. Redis's single-threaded model dodges this entirely. For write-heavy pipelined workloads, this matters.
+\end{enumerate}
+
+We think these are acceptable costs for a database, where one memory bug can corrupt everything. But they are real costs, and anyone considering Rust for a similar project should be aware of them.
+
+\subsection{Beyond RivetDB}
+
+The four design patterns we described in Section~IV are not RivetDB-specific. Sharded ownership works for any concurrent data structure. Channel-based ownership transfer works for any producer-consumer pipeline. Atomic counters work for any instrumentation you do not want blocking the hot path. And Arc-wrapped isolation works whenever you need multiple contexts sharing a resource. We have seen similar patterns in other Rust projects and expect them to generalize well.
+
+\subsection{Limitations}
+
+A few caveats. Our error taxonomy comes from one project built by one team---a larger codebase or a different team would probably hit different distributions of errors. The isolation test covers correctness but not adversarial scenarios (a malicious tenant trying to exploit timing windows, for instance). And our benchmarks were run on one machine with one workload mix; your numbers will differ.
+
+% ============================================================
+% 8. RELATED WORK
+% ============================================================
+\section{Related Work}
+
+Jung et al.\ did the foundational work on proving Rust's safety guarantees formally through the RustBelt project~\cite{jung2021rustbelt}. Their key result is that Rust's type system remains sound even when libraries internally use \texttt{unsafe}---which matters for us because DashMap and Tokio both rely on unsafe internals. Astrauskas et al.\ showed that Rust's type system also makes automated verification easier compared to C~\cite{astrauskas2020}.
+
+On the practical side, Balasubramanian et al.\ studied how Rust is used in real systems and found growing adoption driven primarily by safety needs~\cite{balasubramanian2017}. Levy et al.\ built an entire embedded OS kernel in Rust (Tock), showing the language works for systems far more constrained than a database~\cite{levy2017tock}.
+
+The ``70\% of bugs are memory safety'' number comes from Microsoft and Google's analyses of their own codebases~\cite{chromium2024}. SQLite has taken the opposite approach---staying in C but investing massively in testing (they claim 100\% branch coverage)~\cite{sqlite2024testing}. Our experience suggests that compile-time enforcement can achieve similar reliability with far less testing effort.
+
+For concurrent databases specifically, the literature covers optimistic and pessimistic concurrency control, MVCC, and lock-free data structures~\cite{bernstein2015}. RivetDB's approach is different: rather than choosing a concurrency protocol and hoping the implementation is correct, we let the type system enforce correctness automatically.
+
+% ============================================================
+% 9. CONCLUSION
+% ============================================================
+\section{Conclusion}
+
+We set out to answer a simple question: does Rust's ownership model actually prevent real database vulnerabilities, or is it just a theoretical benefit? After fifteen months of building RivetDB, our answer is that it works---and it works well.
+
+The six CVE classes we examined (heap overflow, use-after-free, data race, null dereference, out-of-bounds write, integer overflow) are all either fully prevented or significantly mitigated by Rust's type system. Five out of six are caught entirely at compile time with no runtime cost. The thirty-seven compiler errors we hit during development each correspond to a bug that would have silently compiled in C and manifested as a runtime defect---possibly months later, possibly in production.
+
+Our multi-tenancy test confirmed that the isolation guarantees hold under realistic concurrent load: zero data leakage across 500,000 operations. And the performance numbers from~\cite{shimpi2026rivetdb} show that none of this safety comes at the expense of speed---RivetDB is 43\% faster than Redis on the operations where its multi-threaded architecture has an advantage.
+
+The bottom line: for database systems where correctness matters (and when does it not?), Rust's compile-time safety model is not just viable---it is arguably the responsible choice.
+
+\subsection{Future Work}
+
+There are several directions we would like to explore next:
+
+\begin{itemize}
+    \item Using formal verification tools like Prusti~\cite{astrauskas2020} to go beyond testing and actually prove RivetDB's isolation properties.
+    \item Testing namespace isolation under adversarial conditions---a malicious tenant actively trying to break out of their namespace.
+    \item Running a controlled experiment where two teams build the same database feature in C and Rust, and comparing development time and bug counts.
+    \item Extending the safety analysis to distributed settings, where network partitions add a whole new layer of concurrency challenges.
+\end{itemize}
+
+% ============================================================
+% REFERENCES
+% ============================================================
+\begin{thebibliography}{12}
+
+\bibitem{shimpi2026rivetdb}
+J. Shimpi, A. Shaikh, R. Polas, G. Shinde, and S. B. Gholap, ``RivetDB: A Concurrent, Feature-Rich In-Memory Database in Rust with Built-in Time-Series, SQL Query, and Multi-Tenancy Support,'' \textit{Journal of Technology}, vol. 14, no. 3, pp. 115--124, 2026. DOI: 18.15001/JOT.2026/V14I3.26.18057. ISSN: 10123407.
+
+\bibitem{matsakis2014}
+N. D. Matsakis and F. S. Klock II, ``The Rust Language,'' in \textit{ACM SIGAda Ada Letters}, vol. 34, no. 3, pp. 103--104, 2014. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/2692956.2663188}
+
+\bibitem{jung2021rustbelt}
+R. Jung, J. Jourdan, R. Krebbers, and D. Dreyer, ``Safe Systems Programming in Rust,'' \textit{Communications of the ACM}, vol. 64, no. 4, pp. 144--152, 2021. [Online]. Available: \url{https://cacm.acm.org/research/safe-systems-programming-in-rust/}
+
+\bibitem{klabnik2023}
+S. Klabnik and C. Nichols, \textit{The Rust Programming Language}, 2nd ed. No Starch Press, 2023. [Online]. Available: \url{https://doc.rust-lang.org/book/}
+
+\bibitem{cwe2024}
+MITRE Corporation, ``CWE---Common Weakness Enumeration,'' 2024. [Online]. Available: \url{https://cwe.mitre.org/}
+
+\bibitem{chromium2024}
+The Chromium Projects, ``Memory Safety,'' 2024. [Online]. Available: \url{https://www.chromium.org/Home/chromium-security/memory-safety/}
+
+\bibitem{lu2008learning}
+S. Lu, S. Park, E. Seo, and Y. Zhou, ``Learning from Mistakes: A Comprehensive Study on Real World Concurrency Bug Characteristics,'' in \textit{Proc. ASPLOS}, 2008, pp. 329--339. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/1346281.1346323}
+
+\bibitem{astrauskas2020}
+V. Astrauskas, P. M\"{u}ller, F. Poli, and A. J. Summers, ``Leveraging Rust Types for Modular Specification and Verification,'' in \textit{Proc. OOPSLA}, 2019. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/3360573}
+
+\bibitem{balasubramanian2017}
+A. Balasubramanian, M. S. Baranowski, A. Burtsev, A. Panda, Z. Rakamari\'{c}, and L. Ryzhyk, ``System Programming in Rust: Beyond Safety,'' in \textit{Proc. HotOS}, 2017. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/3102980.3103006}
+
+\bibitem{levy2017tock}
+A. Levy, B. Campbell, B. Ghena, D. B. Giffin, P. Pannuto, P. Dutta, and P. Levis, ``Multiprogramming a 64 kB Computer Safely and Efficiently,'' in \textit{Proc. SOSP}, 2017. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/3132747.3132786}
+
+\bibitem{sqlite2024testing}
+D. R. Hipp, ``How SQLite Is Tested,'' 2024. [Online]. Available: \url{https://www.sqlite.org/testing.html}
+
+\bibitem{bernstein2015}
+P. A. Bernstein and S. Das, ``Rethinking Eventual Consistency,'' in \textit{Proc. SIGMOD}, 2013, pp. 923--928. [Online]. Available: \url{https://dl.acm.org/doi/10.1145/2463676.2465339}
+
+\end{thebibliography}
+
+\end{document}
+

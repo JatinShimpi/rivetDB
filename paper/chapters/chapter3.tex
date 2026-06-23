@@ -1,0 +1,392 @@
+% ============================================================
+% CHAPTER 3: SYSTEM DESIGN
+% ============================================================
+\customchapter{System Design}
+
+This chapter provides an exhaustive breakdown of RivetDB's architectural blueprint. We detail the modular structure of the system, the life-cycle of a command from network ingestion to disk persistence, and the theoretical foundation of the underlying data structures.
+
+\section{System Description}
+
+RivetDB is designed as a highly concurrent, low-latency, and memory-safe key-value store. It is engineered from the ground up to eliminate the single-thread bottlenecks found in legacy systems like Redis, while avoiding the memory vulnerabilities inherent in C-based databases. The core storage engine operates entirely in main memory (RAM), ensuring that read and write latencies are bound only by the speed of CPU cache hierarchies rather than disk I/O.
+
+The system is fundamentally modular, layered into five distinct processing pipelines: Network Ingestion, Protocol Parsing, Dynamic Dispatch, Concurrent Execution, and Asynchronous Persistence. Rather than utilizing heavy locking mechanisms that starve threads, RivetDB employs fine-grained lock striping via concurrent hash maps. This ensures that multiple CPU cores can mutate the database state in parallel without data corruption or deadlocks.
+
+\section{Basic Block Diagram}
+
+The Basic Block Diagram illustrates the high-level flow of data from external clients through the internal subsystems of RivetDB. 
+
+\begin{enumerate}[leftmargin=2.5em]
+    \item \textbf{Networking and Protocol Layer}: Manages incoming TCP connections and parses the Redis Serialization Protocol (RESP) bytecode.
+    \item \textbf{Command Router}: A dynamic dispatch layer that maps parsed RESP arrays to specific command execution modules.
+    \item \textbf{Concurrent Storage Engine}: The core memory structure utilizing \texttt{DashMap} for parallel data access.
+    \item \textbf{Advanced Features Engine}: Sub-modules dedicated to non-standard functionality, such as the SQL parser and Namespace isolation manager.
+    \item \textbf{Asynchronous Persistence Layer}: A decoupled engine responsible for flushing mutating operations to an Append-Only File (AOF) via cross-thread channels.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=1cm and 0cm,
+        box/.style={draw, rectangle, rounded corners, minimum width=5cm, minimum height=0.8cm, align=center},
+        db/.style={draw, cylinder, shape border rotate=90, aspect=0.25, minimum width=3cm, minimum height=1.5cm, align=center},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[box] (Client) {Redis Clients / TCP Streams};
+    \node[box, below=of Client] (Network) {Tokio Async Network Engine};
+    \node[box, below=of Network] (Parser) {RESP \& SQL Parser};
+    \node[box, below=of Parser] (Engine) {Command Execution Engine};
+    
+    \node[box, below left=1cm and -1.5cm of Engine] (Storage) {DashMap Core Storage};
+    \node[box, below right=1cm and -1.5cm of Engine] (AOF) {AOF Persistence Channel};
+    
+    \node[db, below=of AOF] (Disk) {File System};
+    
+    \draw[arrow] (Client) -- (Network);
+    \draw[arrow] (Network) -- (Parser);
+    \draw[arrow] (Parser) -- (Engine);
+    \draw[arrow] (Engine) -- (Storage);
+    \draw[arrow] (Engine) -- (AOF);
+    \draw[arrow] (AOF) -- (Disk);
+    
+    \end{tikzpicture}
+    \caption{Basic Block Diagram of RivetDB Components}
+    \label{fig:block_diagram}
+\end{figure}
+
+\section{Flowchart}
+
+The System Workflow Flowchart details the logical decision tree and event loop for processing a single client request. It traces the packet from the moment it hits the Tokio TCP listener, through the RESP parsing phase, into the Command Router, and finally down to either a memory read or a memory mutation followed by an asynchronous AOF disk log.
+
+\begin{figure}[htbp]
+    \centering
+    \resizebox{0.9\textwidth}{!}{
+    \begin{tikzpicture}[
+        node distance=1cm and 1.5cm,
+        startstop/.style={draw, rectangle, rounded corners=15pt, minimum width=3cm, minimum height=0.8cm, align=center},
+        process/.style={draw, rectangle, minimum width=3cm, minimum height=0.8cm, align=center},
+        decision/.style={draw, diamond, aspect=2, minimum width=3cm, minimum height=1cm, align=center},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[startstop] (Start) {Client Connects};
+    \node[process, below=0.8cm of Start] (Read) {Read TCP Stream};
+    \node[decision, below=0.8cm of Read] (Parse) {Parse Valid\\RESP?};
+    \node[process, right=2cm of Parse] (ErrResp) {Return Error};
+    \node[decision, below=1cm of Parse] (Cmd) {Command\\Type?};
+    \node[process, left=1cm of Cmd] (ExecRead) {Read from DashMap};
+    \node[process, right=1cm of Cmd] (ExecWrite) {Mutate DashMap};
+    \node[process, below=1cm of ExecWrite] (AOF) {Push to AOF Channel};
+    \node[process, below=4cm of Parse] (Send) {Send Response};
+    \node[startstop, below=0.8cm of Send] (Loop) {Wait for Next Command};
+    
+    \draw[arrow] (Start) -- (Read);
+    \draw[arrow] (Read) -- (Parse);
+    \draw[arrow] (Parse) -- node[above] {No} (ErrResp);
+    \draw[arrow] (Parse) -- node[left] {Yes} (Cmd);
+    \draw[arrow] (Cmd) -- node[above] {Read} (ExecRead);
+    \draw[arrow] (Cmd) -- node[above] {Write} (ExecWrite);
+    \draw[arrow] (ExecWrite) -- (AOF);
+    \draw[arrow] (ExecRead) |- (Send);
+    \draw[arrow] (AOF) |- (Send);
+    \draw[arrow] (ErrResp) |- (Send);
+    \draw[arrow] (Send) -- (Loop);
+    
+    \end{tikzpicture}
+    }
+    \caption{System Workflow Flowchart for Command Execution}
+    \label{fig:workflow_flowchart}
+\end{figure}
+
+\section{Networking and Protocol Layer}
+
+\subsection{The Tokio Asynchronous Runtime}
+RivetDB completely avoids the traditional Thread-per-Connection model. Instead, it is built on \textbf{Tokio}, an event-driven, non-blocking I/O platform for Rust. When the RivetDB server starts, Tokio spawns a pool of worker threads typically equal to the number of logical CPU cores on the host machine. 
+
+When a client connects over TCP, Tokio spawns an asynchronous "Task." Unlike an OS thread, a Tokio task is incredibly lightweight, requiring only a few hundred bytes of memory to store its state machine. This allows RivetDB to concurrently manage 10,000+ active client connections with negligible memory overhead. If a client connection is idle (waiting for network packets), Tokio immediately yields the underlying worker thread to execute another active task, ensuring 100\% CPU utilization.
+
+\subsection{RESP Protocol Parsing}
+RivetDB implements the Redis Serialization Protocol (RESP). This is a critical design decision: by speaking RESP natively, RivetDB is instantly compatible with the massive global ecosystem of Redis client libraries in Python, Node.js, Java, Go, and C++.
+
+The RESP parser reads raw bytes from the TCP socket and constructs a recursive Rust \texttt{Enum} representing the data types: Simple Strings, Errors, Integers, Bulk Strings, and Arrays.
+
+\section{The Concurrent Storage Engine}
+
+The heart of RivetDB is the \texttt{DbState} struct, which wraps a \texttt{DashMap<String, Value>}. 
+
+\subsection{Lock Striping via DashMap}
+If RivetDB used a standard Rust \texttt{Mutex<HashMap>}, any thread reading or writing would lock the entire database. If Thread A is updating the key "user:1", Thread B would be blocked from reading the completely unrelated key "config:theme". This would throttle the system to single-thread speeds.
+
+\texttt{DashMap} solves this through \textbf{Lock Striping}. Internally, \texttt{DashMap} allocates an array of independent shards (by default, based on the number of CPU cores, but tuned higher in RivetDB to minimize contention). When a key is inserted, its hash determines which shard it belongs to. To mutate the key, only the read-write lock for that specific shard is acquired. Therefore, Thread A and Thread B can execute operations entirely in parallel, provided their keys hash to different shards. 
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=1.5cm and 0.5cm,
+        thread/.style={draw, rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center},
+        hash/.style={draw, ellipse, minimum width=3cm, minimum height=1cm, align=center},
+        shard/.style={draw, cylinder, shape border rotate=90, aspect=0.25, minimum width=1.8cm, minimum height=1.2cm, align=center},
+        info/.style={draw, rectangle, dashed, fill=yellow!10, text width=8cm, align=center, rounded corners},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[thread] (Req2) {Thread 2:\\SET KeyB};
+    \node[thread, left=0.5cm of Req2] (Req1) {Thread 1:\\SET KeyA};
+    \node[thread, right=0.5cm of Req2] (Req3) {Thread 3:\\GET KeyC};
+    
+    \node[hash, below=1cm of Req2] (H) {Hash Function};
+    
+    \node[shard, below left=1.5cm and 2cm of H] (S1) {Shard 1};
+    \node[shard, right=0.5cm of S1] (S2) {Shard 2};
+    \node[shard, right=0.5cm of S2] (S3) {Shard 3};
+    \node[shard, right=0.5cm of S3] (S4) {Shard 4};
+    
+    \node[info, below=1cm of S2, xshift=1.5cm] (Info) {Each Shard has its own Lock.\\Threads 1 and 2 can write simultaneously\\if they hit different shards!};
+    
+    \draw[arrow] (Req1) -- (H);
+    \draw[arrow] (Req2) -- (H);
+    \draw[arrow] (Req3) -- (H);
+    \draw[arrow] (H) -- (S1);
+    \draw[arrow] (H) -- (S2);
+    \draw[arrow] (H) -- (S3);
+    \draw[arrow] (H) -- (S4);
+    
+    \end{tikzpicture}
+    \caption{Lock Striping and Sharded Access in DashMap}
+    \label{fig:dashmap_diagram}
+\end{figure}
+
+\section{Data Models and Time Complexity}
+
+RivetDB supports 8 distinct native data types. Each is meticulously engineered in Rust to optimize for time and space complexity.
+
+\begin{itemize}[leftmargin=2.5em]
+    \item \textbf{Strings}: The most fundamental data type, implemented internally as a standard Rust \texttt{String} or a raw \texttt{Vec<u8>} byte array for binary safety. This allows RivetDB to store everything from simple text values to serialized JPEG images up to 512MB in size. \\
+    \textit{Time Complexity}: $O(1)$ for standard GET and SET operations, making it extremely fast for basic key-value caching.
+    
+    \item \textbf{Lists}: Engineered to support rapid queue and stack operations, Lists are implemented using Rust's \texttt{LinkedList<String>}. This is a doubly-linked list providing efficient insertion and deletion at both the head and tail, making it ideal for implementing message queues and activity feeds. \\
+    \textit{Time Complexity}: $O(1)$ for head/tail operations (LPUSH, RPUSH, LPOP, RPOP). However, random index access (LINDEX) operates in $O(N)$ time.
+    
+    \item \textbf{Sets}: Unordered collections of unique strings, critical for tracking unique visitors or tagging systems. Internally, this is implemented as a standard Rust \texttt{HashSet<String>} which uses the high-performance SipHash algorithm to prevent hash collision denial-of-service (DoS) attacks. \\
+    \textit{Time Complexity}: $O(1)$ expected time for adding (SADD), removing (SREM), and checking membership (SISMEMBER). Fetching all members (SMEMBERS) is $O(N)$.
+    
+    \item \textbf{Sorted Sets}: A highly complex data structure that associates every unique string member with a floating-point score. RivetDB implements this using a dual-structure approach: a \texttt{HashMap} provides instant $O(1)$ lookups for a member's score, while a concurrent \texttt{BTreeMap} keeps the members strictly ordered by their score to allow incredibly fast range queries (e.g., "get top 10 players"). \\
+    \textit{Time Complexity}: $O(\log N)$ for inserting elements (ZADD). $O(\log N + M)$ for retrieving a range of elements (ZRANGE), where M is the number of elements returned.
+    
+    \item \textbf{Hashes}: Designed to represent objects (e.g., a User with fields like name, age, email). Internally, it is implemented as a nested \texttt{HashMap<String, String>} stored within the primary DashMap. \\
+    \textit{Time Complexity}: $O(1)$ for setting (HSET) and getting (HGET) individual fields within the hash object.
+    
+    \item \textbf{JSON Documents}: To bridge the gap between key-value stores and document databases, RivetDB natively supports JSON. It leverages the \texttt{serde\_json::Value} tree structure to store arbitrary, deeply nested JSON objects. Custom commands allow clients to query and mutate specific paths within the JSON tree without fetching the entire document over the network. \\
+    \textit{Time Complexity}: $O(P)$ where $P$ is the length and depth of the JSON path evaluated during the query.
+    
+    \item \textbf{Bloom Filters}: A highly specialized probabilistic data structure used to test whether an element is a member of a set. It uses a highly compressed bit-vector and multiple MurmurHash3 hashing functions. It can guarantee that an item is \textit{definitely not} in the set, but can only state it is \textit{probably} in the set, saving massive amounts of memory compared to a standard Set. \\
+    \textit{Time Complexity}: $O(K)$ where $K$ is the number of hash functions, which resolves to a constant $O(1)$ time regardless of the number of items inserted.
+    
+    \item \textbf{Time-Series}: Specifically engineered for IoT sensor data and financial ticker feeds, Time-Series data stores chronologically ordered data points \texttt{(Timestamp, Value)}. RivetDB uses an underlying \texttt{BTreeMap} with integer timestamps as keys, ensuring data is always sorted on insertion for instantaneous historical range aggregation. \\
+    \textit{Time Complexity}: $O(\log N)$ for appending a data point (TS.ADD). $O(\log N + M)$ for fetching historical data ranges (TS.RANGE).
+\end{itemize}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=0.8cm and 1.5cm,
+        key/.style={draw, rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center},
+        tree/.style={draw, cylinder, shape border rotate=90, aspect=0.25, minimum width=2.5cm, minimum height=1.5cm, align=center},
+        val/.style={draw, rectangle, minimum width=5cm, minimum height=0.6cm, align=left},
+        info/.style={draw, rectangle, dashed, fill=yellow!10, text width=7cm, align=center, rounded corners},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[key] (Key) {Key: sensor\_temp};
+    \node[tree, right=of Key] (Tree) {BTreeMap};
+    
+    \node[val, right=of Tree, yshift=1cm] (Node1) {Timestamp: 16900000 $\rightarrow$ Value: 24.5};
+    \node[val, below=0.3cm of Node1] (Node2) {Timestamp: 16900005 $\rightarrow$ Value: 24.8};
+    \node[val, below=0.3cm of Node2] (Node3) {Timestamp: 16900010 $\rightarrow$ Value: 25.1};
+    
+    \node[info, below=0.8cm of Tree, xshift=2cm] (Info) {BTreeMap keeps timestamps automatically sorted\\for $O(\log N)$ range queries!};
+    
+    \draw[arrow] (Key) -- (Tree);
+    \draw[arrow] (Tree) -- (Node1.west);
+    \draw[arrow] (Tree) -- (Node2.west);
+    \draw[arrow] (Tree) -- (Node3.west);
+    
+    \end{tikzpicture}
+    \caption{Time-Series Data Layout using BTreeMap}
+    \label{fig:timeseries_diagram}
+\end{figure}
+
+\section{The SQL Query Engine}
+
+A major differentiator for RivetDB is the embedded SQL-like query engine. While traditional key-value stores require the application layer to fetch multiple keys and filter them in memory, RivetDB pushes this computation down to the database tier.
+
+\subsection{Supported SQL Grammar}
+RivetDB's internal parser utilizes a custom Lexer to tokenize incoming strings. It currently supports a subset of standard SQL focused entirely on data extraction and filtering across the key-value namespace:
+
+\begin{itemize}[leftmargin=2.5em]
+    \item \textbf{SELECT}: Supports fetching specific fields (for Hash types), the entire value, or the key name itself.
+    \item \textbf{WHERE}: The core filtering mechanism. Supports logical operators (\texttt{AND}, \texttt{OR}), comparison operators (\texttt{=}, \texttt{>}, \texttt{<}, \texttt{!=}), and pattern matching (\texttt{LIKE} with wildcard support).
+    \item \textbf{LIMIT \& OFFSET}: Supports cursor-based pagination to prevent massive result sets from overwhelming the network buffer.
+\end{itemize}
+
+\subsection{SQL Execution Flow}
+\begin{enumerate}[leftmargin=2.5em]
+    \item \textbf{Lexical Analysis and Parsing}: The query string is tokenized and parsed into a logical Abstract Syntax Tree (AST).
+    \item \textbf{Predicate Extraction}: The \texttt{WHERE} clause is broken down into executable predicate functions in Rust.
+    \item \textbf{Key-Space Scan}: The engine iterates over the \texttt{DashMap}. Because of the concurrent architecture, this iteration does not globally lock the database, allowing concurrent SET/GET operations to proceed.
+    \item \textbf{Filtering and Projection}: Data structures that evaluate to \texttt{true} against the predicates are extracted, projected into tabular output arrays, and serialized back to RESP format for the client.
+\end{enumerate}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=0.8cm and 2cm,
+        query/.style={draw, rectangle, dashed, minimum width=5cm, minimum height=0.8cm, align=center},
+        process/.style={draw, rectangle, rounded corners, minimum width=3.5cm, minimum height=0.8cm, align=center},
+        decision/.style={draw, diamond, aspect=2, minimum width=3cm, minimum height=1cm, align=center},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[query] (SQL) {\texttt{SELECT id, name WHERE age > 25}};
+    \node[process, below=of SQL] (Lexer) {Tokenization};
+    \node[process, below=of Lexer] (Parser) {Generate AST};
+    \node[process, below=of Parser] (Engine) {Iterate DashMap};
+    \node[decision, below=of Engine] (Eval) {Evaluate\\Predicate};
+    \node[process, left=1cm of Eval, yshift=-1.5cm] (Results) {Add to Result Array};
+    \node[process, right=1cm of Eval, yshift=-1.5cm] (Skip) {Skip Entry};
+    \node[process, below=1cm of Results] (Format) {Format as RESP Array};
+    
+    \draw[arrow] (SQL) -- (Lexer);
+    \draw[arrow] (Lexer) -- (Parser);
+    \draw[arrow] (Parser) -- (Engine);
+    \draw[arrow] (Engine) -- (Eval);
+    \draw[arrow] (Eval) -| node[above left] {True} (Results);
+    \draw[arrow] (Eval) -| node[above right] {False} (Skip);
+    \draw[arrow] (Results) -- (Format);
+    
+    \end{tikzpicture}
+    \caption{SQL Query Execution Flowchart}
+    \label{fig:sql_flowchart}
+\end{figure}
+
+\section{Namespaces and Multi-Tenancy}
+
+Unlike Redis, which limits users to 16 numbered databases without hard boundaries, RivetDB implements a \texttt{Namespace} subsystem. 
+
+Each Namespace is a logical wrapper around its own isolated \texttt{DashMap} and configuration state. The TCP connection state tracks the active namespace for each specific client. When a client issues a command, the router implicitly targets the active namespace's memory pool. This provides true multi-tenancy, allowing a single RivetDB instance to host completely disjoint applications securely without the risk of key collisions or data exposure.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=1cm and 2cm,
+        tenant/.style={draw, rectangle, rounded corners, minimum width=2.5cm, minimum height=0.8cm, align=center},
+        key/.style={draw, rectangle, minimum width=3cm, minimum height=0.8cm, align=center, fill=gray!10},
+        engine/.style={draw, rectangle, minimum width=4cm, minimum height=1cm, align=center, fill=blue!10},
+        mem/.style={draw, cylinder, shape border rotate=90, aspect=0.25, minimum width=3cm, minimum height=1.5cm, align=center},
+        arrow/.style={-stealth, thick}
+    ]
+    
+    \node[tenant] (Client1) {Tenant A};
+    \node[tenant, right=of Client1] (Client2) {Tenant B};
+    
+    \node[key, below=of Client1] (PrefixA) {Key: \texttt{A:user:1}};
+    \node[key, below=of Client2] (PrefixB) {Key: \texttt{B:user:1}};
+    
+    \node[engine, below right=1cm and -1.5cm of PrefixA] (Engine) {RivetDB Engine};
+    
+    \node[mem, below left=1cm and -1cm of Engine] (Mem1) {Tenant A\\Memory Quota};
+    \node[mem, below right=1cm and -1cm of Engine] (Mem2) {Tenant B\\Memory Quota};
+    
+    \draw[arrow] (Client1) -- (PrefixA);
+    \draw[arrow] (Client2) -- (PrefixB);
+    \draw[arrow] (PrefixA) -- (Engine);
+    \draw[arrow] (PrefixB) -- (Engine);
+    \draw[arrow] (Engine) -- (Mem1);
+    \draw[arrow] (Engine) -- (Mem2);
+    
+    \end{tikzpicture}
+    \caption{Namespace Isolation and Multi-Tenancy Architecture}
+    \label{fig:multitenancy_diagram}
+\end{figure}
+
+\section{Asynchronous AOF Persistence}
+
+To ensure durability against system crashes, RivetDB uses Append-Only File (AOF) persistence. Every mutating command (SET, LPUSH, HDEL) is appended to a log file on disk. Upon restart, the system replays this log to reconstruct the exact memory state.
+
+\subsection{Decoupling Disk I/O}
+If the Tokio event loop had to execute a disk \texttt{fsync} operation for every SET command, the database would slow to the speed of the disk (a few thousand ops/sec). 
+
+RivetDB solves this using \textbf{multi-producer, single-consumer (mpsc) channels}. The command router sends a lightweight message representing the command over an in-memory channel. A dedicated background thread (the AOF Writer) receives these messages, buffers them into a 64KB \texttt{BufWriter}, and performs batched disk flushes according to the user-configured policy (Always, Everysec, or No). This guarantees that disk latency never blocks network throughput.
+
+\section{Configuration Architecture}
+
+RivetDB employs a layered configuration system designed for operational flexibility. The system loads its settings from a TOML configuration file (\texttt{rivetdb.toml}) at startup, and any parameter can be overridden via command-line arguments using the \texttt{clap} argument parser.
+
+The configuration is organized into five logical domains:
+
+\begin{itemize}[leftmargin=2.5em]
+    \item \textbf{Server Configuration}: Defines the TCP bind address (\texttt{host}, \texttt{port}), the maximum number of concurrent connections (default: 10,000), and the HTTP port for the Prometheus metrics endpoint (default: 9090).
+    \item \textbf{Memory Configuration}: Specifies the \texttt{max\_memory} limit using human-readable strings (e.g., ``1GB'', ``512MB'') and the eviction policy (\texttt{allkeys-lfu}, \texttt{allkeys-lru}, or \texttt{noeviction}).
+    \item \textbf{Persistence Configuration}: Controls whether AOF is enabled, the fsync policy (\texttt{always}, \texttt{everysec}, or \texttt{no}), and the AOF filename.
+    \item \textbf{Logging Configuration}: Sets the log verbosity level (\texttt{trace}, \texttt{debug}, \texttt{info}, \texttt{warn}, \texttt{error}) using the \texttt{tracing} crate and environment filter.
+    \item \textbf{Security Configuration}: Enables or disables connection authentication and stores the server password for the \texttt{AUTH} command.
+\end{itemize}
+
+This design follows the Twelve-Factor App methodology, allowing the same binary to be deployed across development, staging, and production environments by simply swapping the configuration file or overriding values via CLI flags.
+
+\section{Observability and Monitoring}
+
+Production database systems require comprehensive operational visibility. RivetDB embeds a full Prometheus-compatible HTTP metrics server built on the Axum web framework. This server runs as a separate Tokio task on a dedicated port (default: 9090) and exposes three critical endpoints:
+
+\subsection{The /metrics Endpoint}
+This endpoint emits telemetry in the standard Prometheus text format, enabling seamless integration with Grafana dashboards. The metrics include:
+
+\begin{itemize}[leftmargin=2.5em]
+    \item \textbf{Per-Command Throughput}: A counter tracking the total invocations of each command (e.g., \texttt{rivetdb\_commands\_total\{command="SET"\} 14523}).
+    \item \textbf{Per-Command Latency}: Cumulative time spent processing each command type in nanoseconds, enabling average latency calculation.
+    \item \textbf{Memory Utilization}: Real-time estimates of memory consumption and utilization percentage against the configured \texttt{max\_memory}.
+    \item \textbf{Keys by Type}: A gauge breaking down the total key count by data type (String, List, Set, ZSet, Hash, JSON, Bloom, TimeSeries).
+    \item \textbf{Expiry Metrics}: Counters for total expired keys and pending expiry entries.
+    \item \textbf{Hot Keys}: The top 10 most frequently accessed keys, critical for identifying cache hotspots.
+    \item \textbf{Slow Log Length}: A gauge reporting the number of slow query entries currently buffered.
+\end{itemize}
+
+\subsection{The Slow Query Log}
+Any command whose execution time exceeds 1 millisecond is automatically recorded in a bounded ring buffer (capacity: 128 entries). Each slow log entry captures the command name, its execution duration in nanoseconds, and the timestamp of occurrence. This allows operators to identify and optimize pathological query patterns without external profiling tools.
+
+\subsection{The /health and /info Endpoints}
+The \texttt{/health} endpoint returns a simple ``OK'' response for load balancer health checks. The \texttt{/info} endpoint returns a JSON payload summarizing the server version, uptime, key count, memory usage, total commands processed, and the active eviction policy.
+
+\section{Authentication and Security}
+
+RivetDB implements connection-level authentication following the Redis \texttt{AUTH} protocol. When the \texttt{require\_auth} flag is set in the configuration, every new TCP connection begins in an unauthenticated state.
+
+\subsection{Authentication Flow}
+\begin{enumerate}[leftmargin=2.5em]
+    \item A client connects to the RivetDB TCP port.
+    \item The server tracks a boolean \texttt{is\_authenticated} flag per connection, initialized to \texttt{false} when authentication is required.
+    \item The client must send \texttt{AUTH <password>} as the first command.
+    \item If the password matches the configured value, the flag is set to \texttt{true} and all subsequent commands proceed normally.
+    \item If the client attempts any command (other than \texttt{AUTH} and \texttt{PING}) before authenticating, the server returns a \texttt{NOAUTH} error.
+\end{enumerate}
+
+This per-connection state model is critical: because RivetDB handles thousands of concurrent connections via Tokio tasks, each task maintains its own independent authentication state without requiring global locks.
+
+\section{Schema Registry and Type-Safe Keys}
+
+A unique feature distinguishing RivetDB from all existing key-value stores is the embedded Schema Registry. While traditional key-value stores allow any arbitrary value to be written to any key, RivetDB's schema system enforces type contracts at the database tier.
+
+\subsection{Schema Definition}
+Administrators define schemas using JSON Schema syntax. A schema specifies the expected data type, required fields (for Hash or JSON values), and validation constraints. Schemas are stored in a concurrent, in-memory registry (\texttt{Arc<DashMap>}).
+
+\subsection{Type-Safe Commands}
+\begin{itemize}[leftmargin=2.5em]
+    \item \texttt{SCHEMA DEFINE <name> <json\_schema>}: Registers a new schema definition in the registry.
+    \item \texttt{TSET <schema> <key> <value>}: Validates the value against the named schema before writing. If validation fails, the command is rejected with a descriptive error.
+    \item \texttt{TGET <schema> <key>}: Retrieves a value with schema-awareness.
+    \item \texttt{TVALIDATE <schema> <value>}: Tests whether a value conforms to a schema without writing it.
+    \item \texttt{TKEYS <pattern>}: Lists all keys associated with a particular schema namespace.
+\end{itemize}
+
+This mechanism prevents a common operational failure mode: a misconfigured microservice writing corrupted data to a shared cache, which then cascades errors to every downstream consumer. By pushing validation into the database, RivetDB eliminates this class of bug entirely.
+

@@ -1,0 +1,59 @@
+% ============================================================
+% CHAPTER 7: PROBLEMS AND DRAWBACKS
+% ============================================================
+\customchapter{Problems and Drawbacks}
+
+While RivetDB successfully achieves its primary objectives of multi-core scaling and memory safety, its architectural design inherently introduces several problems and drawbacks when compared to established industry solutions like Redis. This chapter critically analyzes the limitations of the current system.
+
+\section{Pipelined Throughput Degradation}
+
+The most significant performance drawback of RivetDB is its degraded throughput under highly pipelined workloads. In a standard operation, RivetDB outperforms single-threaded Redis because concurrent clients can execute commands simultaneously across multiple cores. 
+
+However, when a single client sends a pipeline of 16 \texttt{SET} commands in a single network packet, Redis processes the entire array of 16 commands sequentially without acquiring a single lock. Conversely, RivetDB's architecture requires the worker task to dynamically acquire and release a \texttt{DashMap} Read-Write lock \textit{for every single command} in the pipeline array. 
+
+Furthermore, for mutating commands, RivetDB must dispatch a message across the \texttt{mpsc} channel to the AOF writer for every command. This constant lock acquisition, context switching, and channel-passing overhead severely bottlenecks the system, causing RivetDB to be significantly slower than Redis for massive batch operations.
+
+\section{Lack of Distributed Clustering}
+
+Currently, RivetDB is strictly a single-node database. It is designed to scale vertically (utilizing more CPU cores on a single machine) rather than horizontally (distributing the dataset across multiple physical machines).
+
+Redis natively supports \textbf{Redis Cluster}, which automatically partitions the hash slots across hundreds of nodes, allowing the total dataset size to exceed the RAM limit of any single machine. RivetDB lacks any routing protocol, gossip communication, or data rebalancing mechanisms required to support a multi-node cluster. If a dataset exceeds the maximum RAM of the largest available server instance, RivetDB cannot handle it without aggressively evicting data.
+
+\section{Absence of High Availability (Master-Slave Replication)}
+
+RivetDB relies entirely on Append-Only File (AOF) persistence for durability. If the physical server running RivetDB crashes or loses power, the data is safe on the disk, but the database is completely unavailable until the server reboots and the system restarts. 
+
+It does not currently support \textbf{Master-Slave Replication} or high availability failover mechanisms like Redis Sentinel. There is no concept of a standby replica that can instantly take over traffic if the primary node fails. Therefore, RivetDB currently poses a single point of failure (SPOF) for production environments that demand 99.999\% uptime.
+
+\section{Memory Overhead of DashMap}
+
+To achieve lock-free concurrent reads and lock-striped writes, \texttt{DashMap} allocates multiple underlying \texttt{HashMap} shards. This design inherently requires more memory overhead to maintain the internal bucket arrays and \texttt{RwLock} state than a traditional, single \texttt{HashMap}. Consequently, for datasets composed of millions of extremely tiny key-value pairs, RivetDB consumes slightly more RAM than a strictly optimized C implementation.
+
+\section{SQL Engine Limitations}
+
+While the embedded SQL query engine provides significant flexibility, it lacks a dedicated Query Optimizer. Complex \texttt{WHERE} clauses with multiple \texttt{AND/OR} predicates are evaluated via a naive linear table scan. While this scan is concurrent and non-blocking to other clients, it is still computationally expensive ($O(N)$). The system lacks secondary indexing support, meaning it cannot jump directly to a subset of keys based on a value predicate, fundamentally limiting the performance of complex analytical queries on massive datasets.
+
+\section{Absence of RDB Snapshot Persistence}
+
+Currently, RivetDB relies solely on AOF persistence. While AOF provides excellent write durability (every mutating command is logged), the AOF log grows indefinitely over the system's lifetime. For a deployment processing millions of writes per day, the AOF file can reach tens of gigabytes within weeks.
+
+This introduces two critical problems:
+\begin{enumerate}[leftmargin=2.5em]
+    \item \textbf{Startup Time}: When RivetDB restarts, it must replay every command in the AOF file sequentially to reconstruct the in-memory state. For a 10GB AOF, this replay can take several minutes, during which the database is completely unavailable.
+    \item \textbf{Disk Space}: Without AOF rewriting or compaction, the log file contains redundant operations (e.g., a key that was SET 1,000 times contributes 1,000 entries, but only the last one matters).
+\end{enumerate}
+
+Redis solves this with RDB snapshots: periodic point-in-time serializations of the entire dataset into a compact binary file. RivetDB does not yet support this mechanism, making long-running deployments vulnerable to excessive startup times.
+
+\section{Compilation and Deployment Complexity}
+
+Rust's rich type system and borrow checker, while providing memory safety guarantees, impose a significant compilation overhead. A clean build of RivetDB with all dependencies takes approximately 2--3 minutes on a modern 8-core machine, compared to Redis's sub-10-second C compilation. Incremental builds are faster (typically 5--10 seconds), but the initial setup and CI/CD pipeline configuration is materially more complex than C-based alternatives.
+
+Additionally, Rust binaries are statically linked by default, resulting in binary sizes of 5--15 MB compared to Redis's 1--2 MB. While this has no runtime performance impact, it increases container image sizes in microservice deployments and may concern teams optimizing for minimal Docker layer caching.
+
+\section{Eviction Accuracy Limitations}
+
+RivetDB's current eviction algorithm performs an exhaustive scan of the \texttt{key\_access\_count} DashMap to find the minimum-frequency key. While this guarantees finding the true least-frequently-used key (unlike Redis's probabilistic 5-key sampling), it introduces $O(N)$ computational complexity during eviction.
+
+For databases with millions of keys, this full scan can momentarily spike CPU usage and increase tail latency during eviction cycles. In contrast, Redis's probabilistic approach, while less accurate, runs in constant $O(1)$ time. A future optimization should implement approximate eviction using reservoir sampling or a min-heap to reduce this overhead.
+
