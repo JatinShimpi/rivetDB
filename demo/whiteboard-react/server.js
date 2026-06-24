@@ -19,9 +19,16 @@ app.get('*', (req, res) => res.sendFile(join(__dirname, 'public', 'index.html'))
 
 // RivetDB (Railway)
 const redis = createClient({
-  socket: { host: process.env.RIVETDB_HOST || 'reseau.proxy.rlwy.net', port: parseInt(process.env.RIVETDB_PORT || '13189') },
+  socket: {
+    host: process.env.RIVETDB_HOST || 'reseau.proxy.rlwy.net',
+    port: parseInt(process.env.RIVETDB_PORT || '13189'),
+    reconnectStrategy: (retries) => Math.min(retries * 500, 5000)
+  },
   password: process.env.RIVETDB_PASSWORD || 'jatin11234321'
 });
+redis.on('error', (err) => console.error('[RivetDB] connection error:', err.message));
+redis.on('reconnecting', () => console.log('[RivetDB] reconnecting...'));
+redis.on('ready', () => console.log('[RivetDB] reconnected'));
 
 // Supabase PostgreSQL
 const pool = new pg.Pool({
