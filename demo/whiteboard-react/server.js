@@ -172,25 +172,29 @@ async function main() {
   await redis.connect();
   console.log('[✓] Connected to RivetDB');
 
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS boards (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      board_code VARCHAR(8) UNIQUE NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW(),
-      ended_at TIMESTAMPTZ,
-      stroke_count INTEGER DEFAULT 0
-    );
-    CREATE TABLE IF NOT EXISTS strokes (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      board_id UUID REFERENCES boards(id) ON DELETE CASCADE,
-      user_id VARCHAR(64) NOT NULL,
-      display_name VARCHAR(64) NOT NULL,
-      color VARCHAR(16) NOT NULL,
-      points JSONB NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    );
-  `);
-  console.log('[✓] Supabase tables ready');
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS boards (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        board_code VARCHAR(8) UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        ended_at TIMESTAMPTZ,
+        stroke_count INTEGER DEFAULT 0
+      );
+      CREATE TABLE IF NOT EXISTS strokes (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        board_id UUID REFERENCES boards(id) ON DELETE CASCADE,
+        user_id VARCHAR(64) NOT NULL,
+        display_name VARCHAR(64) NOT NULL,
+        color VARCHAR(16) NOT NULL,
+        points JSONB NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+    console.log('[✓] Supabase tables ready');
+  } catch (err) {
+    console.error('[!] Supabase unavailable (persistence disabled):', err.message);
+  }
 
   const PORT = process.env.PORT || 3000;
   httpServer.listen(PORT, '0.0.0.0', () => {
