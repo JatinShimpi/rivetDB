@@ -12,8 +12,8 @@ import websockets
 import redis
 from datetime import datetime
 
-# RivetDB connection (Redis-compatible)
-r = redis.Redis(host='localhost', port=7878, decode_responses=True)
+# RivetDB connection (Redis-compatible) - Railway deployment
+r = redis.Redis(host='reseau.proxy.rlwy.net', port=13189, password='jatin11234321', decode_responses=True)
 
 # Connected clients
 clients = {}
@@ -128,7 +128,7 @@ async def main():
     # Test RivetDB connection
     try:
         r.ping()
-        print("[✓] Connected to RivetDB on port 7878")
+        print("[✓] Connected to RivetDB on reseau.proxy.rlwy.net:13189")
     except:
         print("[✗] Cannot connect to RivetDB! Start it first:")
         print("    cargo run --release")
