@@ -76,6 +76,14 @@ async fn main() {
         config.persistence.aof_enabled = aof_enabled;
     }
 
+    // Override security config from environment variables
+    if let Ok(password) = std::env::var("RIVETDB_PASSWORD") {
+        if !password.is_empty() {
+            config.security.password = Some(password);
+            config.security.require_auth = true;
+        }
+    }
+
     // Initialize tracing/logging
     init_logging(&config.logging.level);
 
