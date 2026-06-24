@@ -12,6 +12,14 @@
 \usepackage{listings}
 \usepackage{multirow}
 
+\lstdefinelanguage{Rust}{
+  keywords={fn, let, mut, pub, use, mod, struct, enum, impl, trait, return, if, else, for, while, loop, match, self, Self, super, crate, move, ref, type, where, async, await, dyn, unsafe, extern},
+  keywordstyle=\color{blue},
+  sensitive=true,
+  comment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]",
+}
 \lstset{
   basicstyle=\ttfamily\small,
   breaklines=true,
