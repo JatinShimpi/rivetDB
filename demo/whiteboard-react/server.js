@@ -122,6 +122,11 @@ io.on('connection', (socket) => {
     console.log(`[+] ${display_name} joined board ${boardCode}`);
   });
 
+  socket.on('draw_move', ({ from, to }) => {
+    if (!currentBoard || !currentUser) return;
+    socket.to(currentBoard).emit('draw_move', { color: currentUser.color, from, to });
+  });
+
   socket.on('draw', async ({ points }) => {
     if (!currentBoard || !currentUser) return;
     const stroke = {

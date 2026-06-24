@@ -58,6 +58,17 @@ export default function Whiteboard({ socket, userId, board, onLeave }) {
 
     socket.on('stroke', (stroke) => drawStroke(ctx, stroke))
 
+    socket.on('draw_move', ({ color, from, to }) => {
+      ctx.beginPath()
+      ctx.strokeStyle = color
+      ctx.lineWidth = 3
+      ctx.lineCap = 'round'
+      ctx.lineJoin = 'round'
+      ctx.moveTo(from.x, from.y)
+      ctx.lineTo(to.x, to.y)
+      ctx.stroke()
+    })
+
     socket.on('board_cleared', () => {
       ctx.fillStyle = '#0f0f0f'
       ctx.fillRect(0, 0, canvas.width, canvas.height)
@@ -78,6 +89,7 @@ export default function Whiteboard({ socket, userId, board, onLeave }) {
 
     return () => {
       socket.off('stroke')
+      socket.off('draw_move')
       socket.off('board_cleared')
       socket.off('user_joined')
       socket.off('user_left')
@@ -106,17 +118,20 @@ export default function Whiteboard({ socket, userId, board, onLeave }) {
     const ctx = canvas.getContext('2d')
     points.current.push(pos)
 
-    // Live draw locally
+    // Live draw locally + broadcast segment
     const pts = points.current
     if (pts.length >= 2) {
+      const from = pts[pts.length - 2]
+      const to = pts[pts.length - 1]
       ctx.beginPath()
       ctx.strokeStyle = board.color
       ctx.lineWidth = 3
       ctx.lineCap = 'round'
       ctx.lineJoin = 'round'
-      ctx.moveTo(pts[pts.length - 2].x, pts[pts.length - 2].y)
-      ctx.lineTo(pts[pts.length - 1].x, pts[pts.length - 1].y)
+      ctx.moveTo(from.x, from.y)
+      ctx.lineTo(to.x, to.y)
       ctx.stroke()
+      socket.emit('draw_move', { from, to })
     }
   }
 
