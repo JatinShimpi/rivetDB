@@ -287,11 +287,11 @@ async fn handle_connection(
                         }
                     };
 
-                    debug!(
+                    info!(
                         client = ?peer_addr,
                         command = %cmd.name,
                         args = ?cmd.args,
-                        "Processing command"
+                        "CMD"
                     );
 
                     // Check authentication before processing command
