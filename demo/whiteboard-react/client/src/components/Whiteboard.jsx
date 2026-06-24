@@ -177,8 +177,9 @@ export default function Whiteboard({ socket, userId, board, onLeave }) {
 
       {/* Top bar */}
       <div style={{ position: 'absolute', top: 16, left: '50%', transform: 'translateX(-50%)', display: 'flex', alignItems: 'center', gap: 12, background: '#1a1a1aee', border: '1px solid #2a2a2a', borderRadius: 12, padding: '8px 16px' }}>
-        <span style={{ fontSize: 12, color: '#666' }}>Board</span>
-        <span style={{ fontSize: 16, fontWeight: 700, color: '#4ECDC4', letterSpacing: 2 }}>{board.board_code}</span>
+        <span style={{ fontSize: 14, fontWeight: 600, color: '#fff' }}>{board.board_name || 'Untitled'}</span>
+        <span style={{ fontSize: 12, color: '#555' }}>·</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: '#4ECDC4', letterSpacing: 2 }}>{board.board_code}</span>
         <button onClick={copyCode} style={{ background: copied ? '#4ECDC4' : '#2a2a2a', border: 'none', color: copied ? '#000' : '#fff', padding: '4px 10px', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
           {copied ? 'Copied!' : 'Copy'}
         </button>

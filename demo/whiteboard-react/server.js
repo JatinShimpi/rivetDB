@@ -78,8 +78,10 @@ async function saveBoard(boardCode) {
       `board:${boardCode}:strokes`,
       `board:${boardCode}:online`,
       `board:${boardCode}:users`,
-      `board:${boardCode}:cursors`
+      `board:${boardCode}:cursors`,
+      `board:${boardCode}:name`
     );
+    await redis.sRem('boards:active', boardCode);
 
     console.log(`[✓] Board ${boardCode} saved (${strokes.length} strokes) → Supabase`);
   } catch (err) {
@@ -110,23 +112,41 @@ io.on('connection', (socket) => {
     return { color, users };
   }
 
-  socket.on('create_board', async ({ user_id, display_name }) => {
+  socket.on('list_boards', async () => {
+    const codes = await redis.sMembers('boards:active');
+    const boards = await Promise.all(codes.map(async (code) => {
+      const name = await redis.get(`board:${code}:name`) || 'Untitled';
+      const online = await redis.sCard(`board:${code}:online`);
+      return { board_code: code, name, online };
+    }));
+    socket.emit('boards_list', boards.sort((a, b) => b.online - a.online));
+  });
+
+  socket.on('create_board', async ({ user_id, display_name, board_name }) => {
     const boardCode = generateBoardCode();
+    await redis.set(`board:${boardCode}:name`, board_name || 'Untitled');
+    await redis.sAdd('boards:active', boardCode);
     const { color, users } = await joinBoard(boardCode, user_id, display_name);
-    socket.emit('board_ready', { board_code: boardCode, color, users, strokes: [] });
-    console.log(`[+] ${display_name} created board ${boardCode}`);
+    socket.emit('board_ready', { board_code: boardCode, board_name: board_name || 'Untitled', color, users, strokes: [] });
+    console.log(`[+] ${display_name} created board "${board_name}" (${boardCode})`);
   });
 
   socket.on('join_board', async ({ board_code, user_id, display_name }) => {
     const boardCode = board_code.toUpperCase().trim();
+    const exists = await redis.sIsMember('boards:active', boardCode);
+    if (!exists) {
+      socket.emit('board_error', 'Board not found or has ended.');
+      return;
+    }
+    const board_name = await redis.get(`board:${boardCode}:name`) || 'Untitled';
     const { color, users } = await joinBoard(boardCode, user_id, display_name);
 
     const rawStrokes = await redis.lRange(`board:${boardCode}:strokes`, 0, -1);
     const strokes = rawStrokes.reverse().map(s => JSON.parse(s));
 
-    socket.emit('board_ready', { board_code: boardCode, color, users, strokes });
+    socket.emit('board_ready', { board_code: boardCode, board_name, color, users, strokes });
     socket.to(boardCode).emit('user_joined', { user_id, display_name, color });
-    console.log(`[+] ${display_name} joined board ${boardCode}`);
+    console.log(`[+] ${display_name} joined board "${board_name}" (${boardCode})`);
   });
 
   socket.on('draw_move', ({ from, to }) => {
