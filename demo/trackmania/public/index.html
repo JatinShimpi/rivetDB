@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>RivetDB · Trackmania Live</title>
+<style>
+  :root { --bg:#0c1320; --card:#141f30; --line:#22334a; --accent:#16d39a; --accent2:#1769aa; --text:#e6eef7; --muted:#7e93a9; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  body { font-family:'Segoe UI',system-ui,sans-serif; background:radial-gradient(1200px 600px at 70% -10%, #16243b 0%, var(--bg) 60%); color:var(--text); min-height:100vh; padding:28px; }
+  header { display:flex; align-items:center; justify-content:space-between; margin-bottom:22px; flex-wrap:wrap; gap:12px; }
+  .brand { font-size:26px; font-weight:800; letter-spacing:.5px; }
+  .brand span { color:var(--accent); }
+  .sub { color:var(--muted); font-size:13px; margin-top:2px; }
+  .status { font-size:12px; color:var(--muted); display:flex; align-items:center; gap:7px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#e05260; }
+  .dot.ok { background:var(--accent); box-shadow:0 0 8px var(--accent); }
+  .grid { display:grid; grid-template-columns:1.3fr 1fr; gap:22px; }
+  @media (max-width:880px){ .grid{ grid-template-columns:1fr; } }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:1.5px; color:var(--muted); margin-bottom:12px; font-weight:700; }
+  .cards { display:flex; flex-direction:column; gap:14px; }
+  .player { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 20px; }
+  .player .top { display:flex; justify-content:space-between; align-items:baseline; }
+  .player .name { font-size:18px; font-weight:700; }
+  .player .speed { font-size:40px; font-weight:800; font-variant-numeric:tabular-nums; }
+  .player .speed small { font-size:15px; color:var(--muted); font-weight:600; margin-left:4px; }
+  .bar { height:10px; background:#0a1422; border-radius:6px; margin-top:12px; overflow:hidden; }
+  .bar > i { display:block; height:100%; background:linear-gradient(90deg,var(--accent2),var(--accent)); width:0%; transition:width .15s linear; }
+  .empty { color:var(--muted); font-style:italic; padding:24px; text-align:center; border:1px dashed var(--line); border-radius:12px; }
+  table { width:100%; border-collapse:collapse; background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  th,td { padding:12px 16px; text-align:left; font-variant-numeric:tabular-nums; }
+  th { background:#0f1a2b; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:1px; }
+  tbody tr { border-top:1px solid var(--line); }
+  tbody tr:nth-child(1) td { color:var(--accent); font-weight:800; }
+  .rank { width:46px; color:var(--muted); }
+  .time { text-align:right; font-weight:700; }
+  footer { margin-top:26px; color:var(--muted); font-size:12px; line-height:1.7; }
+  footer code { background:#0f1a2b; padding:2px 7px; border-radius:5px; color:var(--accent); }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <div class="brand">Rivet<span>DB</span> · Trackmania Live</div>
+      <div class="sub">Real-time race telemetry streamed straight into RivetDB</div>
+    </div>
+    <div class="status"><span class="dot" id="dot"></span><span id="statusText">connecting…</span></div>
+  </header>
+
+  <div class="grid">
+    <section>
+      <h2>Live drivers</h2>
+      <div class="cards" id="live"><div class="empty">Waiting for telemetry… start driving in Trackmania.</div></div>
+    </section>
+    <section>
+      <h2>🏁 Leaderboard — best lap</h2>
+      <table>
+        <thead><tr><th class="rank">#</th><th>Driver</th><th class="time">Time</th></tr></thead>
+        <tbody id="board"><tr><td colspan="3" class="empty" style="border:none">No finishes yet</td></tr></tbody>
+      </table>
+    </section>
+  </div>
+
+  <footer>
+    Powered by <b>RivetDB</b> — live state in a <code>HASH</code>, speed history in a <code>TimeSeries</code>, ranking in a <code>Sorted Set</code> (<code>ZADD</code> / <code>ZRANGE</code>).<br/>
+    Two PCs writing at once = concurrent, multi-core, real-time. The whole point of the project.
+  </footer>
+
+<script>
+const MAX_SPEED = 300; // km/h for the bar scale
+function fmtTime(ms){ const s=ms/1000; const m=Math.floor(s/60); const r=(s-m*60).toFixed(3); return (m>0? m+":"+r.padStart(6,'0') : r)+"s"; }
+
+async function tick(){
+  try{
+    const r = await fetch('/state', {cache:'no-store'});
+    const { live, leaderboard } = await r.json();
+    document.getElementById('dot').className = 'dot ok';
+    document.getElementById('statusText').textContent = live.length + ' driver(s) live';
+
+    const liveEl = document.getElementById('live');
+    if(!live.length){ liveEl.innerHTML = '<div class="empty">Waiting for telemetry… start driving in Trackmania.</div>'; }
+    else {
+      liveEl.innerHTML = live.map(p=>{
+        const pct = Math.max(0, Math.min(100, (p.speed/MAX_SPEED)*100));
+        return `<div class="player">
+          <div class="top"><div class="name">${esc(p.player)}</div>
+          <div class="speed">${Math.round(p.speed)}<small>km/h</small></div></div>
+          <div class="bar"><i style="width:${pct}%"></i></div></div>`;
+      }).join('');
+    }
+
+    const board = document.getElementById('board');
+    if(!leaderboard.length){ board.innerHTML = '<tr><td colspan="3" class="empty" style="border:none">No finishes yet</td></tr>'; }
+    else {
+      board.innerHTML = leaderboard.map((e,i)=>
+        `<tr><td class="rank">${i+1}</td><td>${esc(e.player)}</td><td class="time">${fmtTime(e.timeMs)}</td></tr>`).join('');
+    }
+  }catch(e){
+    document.getElementById('dot').className='dot';
+    document.getElementById('statusText').textContent='bridge offline';
+  }
+}
+function esc(s){ return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+setInterval(tick, 300); tick();
+</script>
+</body>
+</html>

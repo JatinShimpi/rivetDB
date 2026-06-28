@@ -1,0 +1,19 @@
+# Render Blueprint for the Trackmania bridge (demo/trackmania/server.js)
+# Deploy: Render Dashboard -> New -> Blueprint -> pick this repo.
+services:
+  - type: web
+    name: tm-bridge
+    runtime: node
+    rootDir: demo/trackmania
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    # RivetDB connection defaults are baked into server.js. To override,
+    # uncomment and set these in the Render dashboard instead of committing secrets:
+    # envVars:
+    #   - key: RIVETDB_HOST
+    #     sync: false
+    #   - key: RIVETDB_PORT
+    #     sync: false
+    #   - key: RIVETDB_PASSWORD
+    #     sync: false
