@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RivetDB · Trade</title>
+<style>
+  :root{--bg:#0a0f17;--panel:#121a26;--line:#1f2c3d;--text:#dce6f2;--muted:#7c8da3;--bid:#1fbf75;--ask:#e5484d;--accent:#16d39a;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);padding:18px;max-width:480px;margin:0 auto;}
+  h1{font-size:20px;margin-bottom:4px;}h1 span{color:var(--accent);}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:16px;}
+  .quote{display:flex;gap:12px;margin-bottom:16px;}
+  .quote .box{flex:1;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px;text-align:center;}
+  .quote .lbl{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:1px;}
+  .quote .v{font-size:22px;font-weight:800;font-variant-numeric:tabular-nums;}
+  .bidc{color:var(--bid);}.askc{color:var(--ask);}
+  label{display:block;font-size:12px;color:var(--muted);margin:12px 0 4px;text-transform:uppercase;letter-spacing:1px;}
+  input{width:100%;padding:12px;background:#0d1622;border:1px solid var(--line);border-radius:8px;color:var(--text);font-size:16px;}
+  .btns{display:flex;gap:12px;margin-top:18px;}
+  button{flex:1;padding:16px;border:none;border-radius:10px;font-size:17px;font-weight:800;color:#fff;cursor:pointer;}
+  .buy{background:var(--bid);}.sell{background:var(--ask);}
+  .mkt{display:flex;gap:12px;margin-top:12px;}
+  .mkt button{padding:11px;font-size:14px;background:#1c2738;color:var(--text);font-weight:600;}
+  .result{margin-top:18px;padding:14px;border-radius:10px;background:var(--panel);border:1px solid var(--line);min-height:48px;font-size:15px;}
+  .ok{color:var(--bid);}.rest{color:var(--accent);}
+  a{color:var(--accent);}
+</style>
+</head>
+<body>
+  <h1>Rivet<span>DB</span> Trading</h1>
+  <div class="sub">Place limit orders into the live order book.</div>
+
+  <div class="quote">
+    <div class="box"><div class="lbl">Best Bid</div><div class="v bidc" id="bid">—</div></div>
+    <div class="box"><div class="lbl">Last</div><div class="v" id="last">—</div></div>
+    <div class="box"><div class="lbl">Best Ask</div><div class="v askc" id="ask">—</div></div>
+  </div>
+
+  <label>Your name</label>
+  <input id="name" placeholder="e.g. Ayan" maxlength="16">
+  <label>Price</label>
+  <input id="price" type="number" inputmode="numeric" placeholder="100">
+  <label>Quantity</label>
+  <input id="qty" type="number" inputmode="numeric" value="5">
+
+  <div class="btns">
+    <button class="buy" onclick="send('buy')">BUY</button>
+    <button class="sell" onclick="send('sell')">SELL</button>
+  </div>
+  <div class="mkt">
+    <button onclick="market('buy')">⚡ Market Buy (hit ask)</button>
+    <button onclick="market('sell')">⚡ Market Sell (hit bid)</button>
+  </div>
+
+  <div class="result" id="result">Enter a price &amp; qty, then BUY or SELL.</div>
+  <div class="sub" style="margin-top:14px;">Big screen: <a href="/" target="_blank">live order book →</a></div>
+
+<script>
+const $ = (id)=>document.getElementById(id);
+$('name').value = localStorage.getItem('tname')||'';
+$('name').addEventListener('input', ()=>localStorage.setItem('tname',$('name').value));
+let book = {};
+
+async function refresh(){
+  try{ book = await (await fetch('/book',{cache:'no-store'})).json();
+    $('bid').textContent = book.bestBid!=null? book.bestBid.toFixed(0):'—';
+    $('ask').textContent = book.bestAsk!=null? book.bestAsk.toFixed(0):'—';
+    $('last').textContent = book.last!=null? book.last.toFixed(0):'—';
+    if(!$('price').value && book.last!=null) $('price').value = book.last.toFixed(0);
+  }catch(e){}
+}
+setInterval(refresh,1000); refresh();
+
+async function order(side, price, qty){
+  const trader = ($('name').value||'anon').trim()||'anon';
+  const r = await (await fetch('/order',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({side,price,qty,trader})})).json();
+  if(r.error){ $('result').innerHTML = '<span style="color:#e5484d">'+r.error+'</span>'; return; }
+  let msg='';
+  if(r.filled>0) msg += `<div class="ok">✅ Filled ${r.filled} @ market</div>`;
+  if(r.rested>0) msg += `<div class="rest">⏳ Resting ${r.rested} @ ${price} on the book</div>`;
+  if(!r.filled && !r.rested) msg='Order processed.';
+  $('result').innerHTML = msg;
+}
+function send(side){
+  const price=parseFloat($('price').value), qty=parseFloat($('qty').value);
+  if(!(price>0)||!(qty>0)){ $('result').textContent='Enter a valid price and qty.'; return; }
+  order(side, Math.round(price), Math.round(qty));
+}
+function market(side){
+  const qty=parseFloat($('qty').value)||5;
+  // aggressive price guaranteed to cross
+  const price = side==='buy' ? (book.bestAsk!=null?book.bestAsk+10:9999) : (book.bestBid!=null?Math.max(1,book.bestBid-10):1);
+  order(side, Math.round(price), Math.round(qty));
+}
+</script>
+</body>
+</html>
