@@ -188,7 +188,8 @@ async function main() {
     const lp = await redis.get('ob:last'); if (lp) lastPrice = parseFloat(lp);
     const v = await redis.get('ob:volume'); if (v) volume = parseInt(v) || 0;
   }
-  startBots(); // lively by default
+  // Bots are OFF by default to avoid background load when nobody is presenting.
+  // Press "Start market" in the dashboard (or POST /bots {on:true}) during the demo.
   const PORT = process.env.PORT || 8080;
   app.listen(PORT, '0.0.0.0', () => console.log(`[✓] Order book bridge on :${PORT}`));
 }

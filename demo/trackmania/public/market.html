@@ -33,6 +33,10 @@
   .foot{margin-top:10px;color:var(--muted);font-size:12px;}
   code{background:#0d1622;padding:2px 6px;border-radius:5px;color:var(--accent);}
   .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent);margin-right:5px;}
+  .dot.off{background:#5b6b80;box-shadow:none;}
+  .ctrl{display:flex;gap:10px;align-items:center;}
+  .ctrl button{padding:9px 16px;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;color:#fff;}
+  .ctrl .start{background:var(--bid);}.ctrl .stop{background:var(--ask);}.ctrl .reset{background:#1c2738;color:var(--text);}
 </style>
 </head>
 <body>
@@ -42,7 +46,12 @@
       <div><div class="lbl">Last</div><div class="val" id="last">—</div></div>
       <div><div class="lbl">Spread</div><div class="val small" id="spread">—</div></div>
       <div><div class="lbl">Volume</div><div class="val small" id="vol">—</div></div>
-      <div><div class="lbl"><span class="dot"></span>Bots</div><div class="val small" id="bots">—</div></div>
+      <div><div class="lbl"><span class="dot" id="botdot"></span>Bots</div><div class="val small" id="bots">—</div></div>
+    </div>
+    <div class="ctrl">
+      <button class="start" onclick="bots(true)">▶ Start market</button>
+      <button class="stop" onclick="bots(false)">■ Stop market</button>
+      <button class="reset" onclick="resetBook()">↻ Reset</button>
     </div>
   </header>
 
@@ -96,6 +105,7 @@ async function tick(){
     document.getElementById('spread').textContent = b.spread!=null? b.spread:'—';
     document.getElementById('vol').textContent = b.volume ?? '—';
     document.getElementById('bots').textContent = b.botsOn?'ON':'off';
+    document.getElementById('botdot').className = 'dot'+(b.botsOn?'':' off');
     const maxQ=Math.max(1,...b.bids.map(x=>x.qty),...b.asks.map(x=>x.qty));
     // asks: show highest at top, best (lowest) just above spread
     document.getElementById('asks').innerHTML = rowsHtml([...b.asks].reverse(),'ask',maxQ);
@@ -106,6 +116,14 @@ async function tick(){
       `<div class="row"><span class="${t.side}">${t.side.toUpperCase()}</span><span>${t.qty} @ ${t.price.toFixed(0)}</span><span style="color:#5b6b80">${t.trader}</span></div>`).join('');
     drawChart(b.chart);
   }catch(e){}
+}
+async function bots(on){
+  await fetch('/bots',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({on})});
+  tick();
+}
+async function resetBook(){
+  if(!confirm('Reset the order book to a clean market?')) return;
+  await fetch('/reset',{method:'POST'}); tick();
 }
 setInterval(tick,400); tick();
 </script>
