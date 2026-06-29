@@ -111,20 +111,22 @@ async function seed() {
 
 // ---------------------------- bot traders ----------------------------------
 let botTimer = null;
-function startBots() { if (botTimer) return; botTimer = setInterval(() => serialize(botTick).catch(() => {}), 550); }
+function startBots() { if (botTimer) return; botTimer = setInterval(() => serialize(botTick).catch(() => {}), 650); }
 function stopBots() { if (botTimer) { clearInterval(botTimer); botTimer = null; } }
 async function botTick() {
   const mid = lastPrice || 100;
   const trader = 'bot' + (1 + Math.floor(Math.random() * 4));
-  if (Math.random() < 0.4) { // marketable -> creates a trade & moves price
+  // 55% cross (consumes liquidity, makes trades, moves price) keeps the book bounded;
+  // 45% small resting liquidity near the mid. Small qtys = a realistic-looking book.
+  if (Math.random() < 0.55) {
     const side = Math.random() < 0.5 ? 'buy' : 'sell';
-    const price = side === 'buy' ? mid + 1 + Math.floor(Math.random() * 3) : mid - 1 - Math.floor(Math.random() * 3);
-    await matchOrder(side, price, 1 + Math.floor(Math.random() * 8), trader);
-  } else {                    // resting liquidity near the mid
+    const price = side === 'buy' ? mid + 1 + Math.floor(Math.random() * 2) : mid - 1 - Math.floor(Math.random() * 2);
+    await matchOrder(side, price, 1 + Math.floor(Math.random() * 6), trader);
+  } else {
     const side = Math.random() < 0.5 ? 'buy' : 'sell';
-    const off = 1 + Math.floor(Math.random() * 5);
+    const off = 1 + Math.floor(Math.random() * 4);
     const price = side === 'buy' ? mid - off : mid + off;
-    await matchOrder(side, price, 2 + Math.floor(Math.random() * 15), trader);
+    await matchOrder(side, price, 1 + Math.floor(Math.random() * 5), trader);
   }
 }
 
