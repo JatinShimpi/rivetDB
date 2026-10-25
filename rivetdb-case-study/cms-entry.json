@@ -1,0 +1,454 @@
+{
+  "title": "A Redis-compatible database in Rust with JSON, time-series and SQL built in",
+  "slug": "redis-compatible-database-rust-json-time-series-sql",
+  "projectName": "Redis-compatible Rust database",
+  "origin": "engineering_team_project",
+  "projectType": "api_backend",
+  "summary": "A Redis-compatible database server in Rust that runs commands on different keys in parallel and builds in JSON, time-series, Bloom filters, schemas and SQL queries.",
+  "thumbnail": "FILE: rivetdb-case-study/thumbnail/thumbnail.png (1600x900, source thumbnail.html)",
+  "seo": {
+    "metaTitle": "Redis-compatible in-memory database written in Rust",
+    "metaDescription": "How the ByteHint team built a Redis-protocol database in Rust with a sharded keyspace, async write log, and built-in JSON, time-series and SQL.",
+    "keywords": "Rust, Redis compatible, in-memory database, Tokio, DashMap, RESP protocol, time-series, JSON, SQL, Prometheus",
+    "metaImage": "FILE: rivetdb-case-study/thumbnail/thumbnail.png"
+  },
+  "industry": "TODO(owner): pick an industry (developer tools or software infrastructure?)",
+  "heroImage": "FILE: rivetdb-case-study/screenshots/S1-whiteboard-split.png",
+  "headlineMetrics": [
+    {
+      "value": "103",
+      "label": "Commands routed",
+      "context": "Redis-style commands plus JSON, time-series, Bloom, schema and SQL commands, counted in the command router."
+    },
+    {
+      "value": "+42.8%",
+      "label": "Non-pipelined INCR vs Redis",
+      "context": "Single machine, redis-benchmark, as reported in the project paper. Pipelined writes are slower than Redis."
+    },
+    {
+      "value": "78",
+      "label": "Automated tests passing",
+      "context": "32 library and 46 command tests, run for this case study. 7 integration tests need a live server."
+    }
+  ],
+  "videoFull": {
+    "url": "TODO(owner): video URL after recording",
+    "lengthSeconds": 240,
+    "transcript": "DRAFT, correct after recording. This is a Redis-compatible database, written from scratch in Rust, with JSON, time-series, Bloom filters, schemas and SQL built in. Existing Redis clients just work. It speaks the Redis protocol over TCP, stays wire-compatible so redis-cli and redis-benchmark run unchanged, and uses every CPU core so commands on different keys run at the same time. The stock redis-cli sets and reads keys, expiries and a sorted-set leaderboard. Then the extras: a JSON order read back by path, temperature readings in a time series, a Bloom filter check, and a SQL query listing every key by type. A collaborative whiteboard runs on top, with strokes appearing live in a second window and stored as list entries. An order book matches trades on sorted sets and writes each trade to a time series. Under the hood, Tokio runs a task per connection, a hand-written parser reads the protocol including partial and batched requests, the keyspace is a sharded map, and writes go to an append-only file through a background channel. The project's single-machine benchmark reports non-pipelined INCR about 42 percent faster than Redis, and pipelined writes far slower. Built by the ByteHint team."
+  },
+  "videoShort": {
+    "url": "TODO(owner): video URL after recording",
+    "lengthSeconds": 100,
+    "transcript": "DRAFT, correct after recording. A Redis-compatible database written from scratch in Rust. The stock redis-cli works against it. On top of the usual commands it builds in JSON with paths, time-series, Bloom filters and a SQL query over the whole keyspace. A live whiteboard runs on it, with strokes appearing in a second window as they are drawn. Inside, a sharded map lets commands on different keys run in parallel, and disk writes happen in the background. The project's own single-machine benchmark puts non-pipelined INCR about 42 percent ahead of Redis and reports where Redis still wins. Built by the ByteHint team."
+  },
+  "problemSummary": [
+    {
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "Redis is the default in-memory store, but it executes commands on a single thread, and JSON, time-series and probabilistic types need separate modules. The goal was a wire-compatible alternative in Rust that uses every core and ships those types built in."
+        }
+      ]
+    }
+  ],
+  "problemChallenges": [
+    {
+      "title": "Single-threaded execution",
+      "description": "Independent writes from many clients queue behind one thread, even when they touch different keys."
+    },
+    {
+      "title": "Features spread across modules",
+      "description": "JSON, time-series and Bloom filters each need a separate module to install and operate."
+    },
+    {
+      "title": "No type checking on stored values",
+      "description": "Bad data reaches the store unchecked unless every application validates it."
+    },
+    {
+      "title": "Staying wire-compatible",
+      "description": "Existing clients and tools must work unchanged, so the server has to speak the protocol exactly, including pipelined and partial frames."
+    },
+    {
+      "title": "Durability without slowing writes",
+      "description": "Logging every write to disk inside the request path would cap throughput at disk speed."
+    }
+  ],
+  "problemConsequence": "Teams keep paying for single-thread limits and run several modules to get the data types they need.",
+  "solutionSummary": [
+    {
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "Developers start one binary and point any Redis client at it. Familiar commands work as before, and the same connection can store JSON documents, time series and Bloom filters, validate values against schemas, and query the keyspace with SQL. Prometheus metrics, a slow log and hot-key tracking are built in."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "Technically, Tokio runs a task per connection, a hand-written parser reads the Redis protocol, and every value lives in one sharded DashMap so commands on different keys do not contend. Write commands are sent through a bounded channel to a background append-only-file writer."
+        }
+      ]
+    }
+  ],
+  "features": [
+    {
+      "title": "Redis wire compatibility",
+      "description": "A hand-written RESP parser handles partial and pipelined frames, so redis-cli, redis-benchmark and standard client libraries work unchanged."
+    },
+    {
+      "title": "Native JSON with JSONPath",
+      "description": "Set, get and update parts of JSON documents by path, including array appends and numeric increments."
+    },
+    {
+      "title": "Time-series and Bloom filters",
+      "description": "Time series with retention, labels and range queries, and Bloom filters for membership checks, with no modules to install."
+    },
+    {
+      "title": "Typed schemas",
+      "description": "Define a schema, and typed writes are rejected when the value does not match it."
+    },
+    {
+      "title": "SQL over the keyspace",
+      "description": "Select, count and delete keys by name pattern, type, memory or TTL with a SQL statement."
+    },
+    {
+      "title": "Built-in observability",
+      "description": "A Prometheus endpoint with 13 metric families, a health endpoint, a slow log for commands over 1 ms and hot-key tracking."
+    }
+  ],
+  "screenshots": [
+    {
+      "image": "FILE: rivetdb-case-study/screenshots/S1-whiteboard-split.png",
+      "caption": "A live whiteboard on the database: strokes broadcast to every window and stored as list entries.",
+      "platform": "desktop"
+    },
+    {
+      "image": "FILE: rivetdb-case-study/screenshots/S2-redis-cli.png",
+      "caption": "The stock redis-cli talks to the server unchanged. Strings, TTLs and sorted sets work as in Redis.",
+      "platform": "terminal"
+    },
+    {
+      "image": "FILE: rivetdb-case-study/screenshots/S3-extended-types.png",
+      "caption": "JSON paths, time-series and a SQL query over the keyspace, built into the server.",
+      "platform": "terminal"
+    },
+    {
+      "image": "FILE: rivetdb-case-study/screenshots/S4-order-book.png",
+      "caption": "An order book matched on sorted sets and hashes, with every trade written to a time series.",
+      "platform": "desktop"
+    },
+    {
+      "image": "FILE: rivetdb-case-study/screenshots/S5-metrics.png",
+      "caption": "Built-in Prometheus metrics: per-command counts and time, memory, keys by type, expirations.",
+      "platform": "desktop"
+    }
+  ],
+  "howItWorks": [
+    {
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "The architecture diagram shows clients connecting over TCP, the protocol parser and auth gate, the command router, the sharded keyspace, and the background tasks for expiry, eviction and the write log, with metrics on a separate HTTP port."
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "children": [
+        {
+          "type": "text",
+          "text": "The command sequence follows one write from raw bytes to reply, including the hand-off to the write log. The whiteboard sequence shows a real-time app built on the database, and the data model and auth flow fill in the details."
+        }
+      ]
+    }
+  ],
+  "diagrams": [
+    {
+      "title": "Architecture",
+      "kind": "architecture",
+      "image": "FILE: rivetdb-case-study/diagrams/architecture.svg",
+      "caption": "Clients over TCP, the protocol parser and auth gate, the command router, a sharded keyspace, background tasks and the metrics endpoint.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/architecture.mmd",
+      "mermaidSource": "flowchart LR\n  subgraph Clients\n    CLI[\"redis-cli /<br/>redis-benchmark\"]\n    Apps[\"Demo app servers<br/>Node redis client\"]\n    Prom[\"Prometheus<br/>scraper\"]\n  end\n  subgraph App[\"Server (Rust + Tokio)\"]\n    TCP[\"TCP listener :7878<br/>task per connection\"]\n    RESP[\"RESP parser<br/>+ AUTH gate\"]\n    Router[\"Command router<br/>about 100 commands\"]\n    HTTP[\"Axum :9090<br/>/metrics /health /info\"]\n  end\n  subgraph Services[\"Background tasks\"]\n    Expiry[\"Expiry sweeper<br/>every 100 ms\"]\n    Evict[\"LFU eviction\"]\n    AOFW[\"AOF writer<br/>mpsc channel\"]\n  end\n  subgraph Data\n    Map[(\"DashMap keyspace<br/>string, list, set, zset,<br/>hash, json, ts, bloom\")]\n    Schemas[(\"Schema registry\")]\n    AOF[(\"appendonly.aof\")]\n  end\n\n  CLI --> TCP\n  Apps --> TCP\n  Prom --> HTTP\n  TCP --> RESP --> Router\n  Router --> Map\n  Router --> Schemas\n  Router -->|\"writes\"| AOFW --> AOF\n  Router --> Evict --> Map\n  Expiry --> Map\n  HTTP --> Map\n\n  classDef ui fill:#a5d8ff,stroke:#1c7ed6,color:#000\n  classDef svc fill:#d0bfff,stroke:#7048e8,color:#000\n  classDef data fill:#c3fae8,stroke:#0ca678,color:#000\n  classDef ext fill:#ffd8a8,stroke:#f08c00,color:#000\n  class CLI,Apps ui\n  class TCP,RESP,Router,HTTP,Expiry,Evict,AOFW svc\n  class Map,Schemas,AOF data\n  class Prom ext"
+    },
+    {
+      "title": "One write, end to end",
+      "kind": "sequence",
+      "image": "FILE: rivetdb-case-study/diagrams/flow-command.svg",
+      "caption": "A SET from bytes to reply: frame parsing, auth check, a write to one shard, the async log hand-off and per-command metrics.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/flow-command.mmd",
+      "mermaidSource": "sequenceDiagram\n  box rgb(165,216,255) Client\n    participant C as Redis client\n  end\n  box rgb(208,191,255) Server\n    participant T as Connection task\n    participant R as Router\n    participant W as AOF writer task\n  end\n  box rgb(195,250,232) Data\n    participant M as DashMap\n    participant F as appendonly.aof\n  end\n\n  C->>T: *3 $3 SET $4 user $4 Asha (RESP)\n  T->>T: buffer bytes, parse frame\n  alt incomplete frame\n    T->>T: wait for more bytes\n  end\n  T->>T: authenticated? else NOAUTH\n  T->>R: route SET\n  R->>M: insert into key's shard (other shards free)\n  R->>R: evict if over max_memory\n  R-->>T: +OK\n  T->>W: try_send(command) to channel\n  T->>T: record count, time, slow log if over 1 ms\n  T-->>C: +OK\n  W->>F: buffered write, fsync per policy"
+    },
+    {
+      "title": "Whiteboard on the database",
+      "kind": "sequence",
+      "image": "FILE: rivetdb-case-study/diagrams/flow-whiteboard.svg",
+      "caption": "Create, join, draw and archive a board: state in the database, broadcast through Socket.IO, archived to Postgres when empty.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/flow-whiteboard.mmd",
+      "mermaidSource": "sequenceDiagram\n  box rgb(165,216,255) Browsers\n    participant A as User A\n    participant B as User B\n  end\n  box rgb(208,191,255) App server\n    participant S as Node + Socket.IO\n  end\n  box rgb(195,250,232) Data\n    participant D as Database (RESP)\n    participant P as Postgres archive\n  end\n\n  A->>S: create_board {name}\n  S->>D: SET board:CODE:name, SADD boards:active\n  S-->>A: board_ready {code}\n  B->>S: join_board {code}\n  S->>D: LRANGE board:CODE:strokes, HSET users\n  S-->>B: board_ready {strokes}\n  A->>S: draw_move (live segment)\n  S-->>B: draw_move\n  A->>S: draw {points}\n  S->>D: LPUSH board:CODE:strokes\n  S-->>B: stroke\n  Note over A,B: everyone leaves\n  S->>D: SCARD board:CODE:online = 0\n  S->>D: LRANGE all strokes\n  S->>P: INSERT boards, strokes\n  S->>D: DEL board keys, SREM boards:active"
+    },
+    {
+      "title": "Infrastructure",
+      "kind": "infrastructure",
+      "image": "FILE: rivetdb-case-study/diagrams/infrastructure.svg",
+      "caption": "CI test matrix, container images, the hosted database endpoint, the demo bridge on Render and the Postgres archive.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/infrastructure.mmd",
+      "mermaidSource": "flowchart LR\n  subgraph CI[\"GitHub Actions (ci.yml)\"]\n    Test[\"Tests: 3 OS x<br/>stable + nightly\"]\n    Lint[\"rustfmt + clippy\"]\n    Cov[\"tarpaulin\"]\n    Rel[\"Release build<br/>artifact\"]\n  end\n  subgraph Images[\"Containers\"]\n    DBImg[\"Database image<br/>rust:1.87 to debian-slim\"]\n    WBImg[\"Whiteboard image<br/>Vite build + Node\"]\n  end\n  subgraph Hosting\n    DBHost[\"Hosted database<br/>TCP endpoint\"]\n    Render[\"Render free web service<br/>order book bridge\"]\n    Supa[(\"Supabase Postgres<br/>board archive\")]\n  end\n  subgraph Ext[\"External\"]\n    Codecov[\"Codecov\"]\n    Player[\"Player PC forwarder<br/>(targets /telemetry, removed<br/>in current server.js)\"]\n    Browser[\"Browser<br/>market + trade pages\"]\n  end\n\n  Test --> Rel\n  Cov --> Codecov\n  DBImg --> DBHost\n  WBImg -.-> DBHost\n  Render -->|\"RESP\"| DBHost\n  WBImg --> Supa\n  Player -.->|\"HTTP\"| Render\n  Browser --> Render\n\n  classDef ui fill:#a5d8ff,stroke:#1c7ed6,color:#000\n  classDef svc fill:#d0bfff,stroke:#7048e8,color:#000\n  classDef data fill:#c3fae8,stroke:#0ca678,color:#000\n  classDef ext fill:#ffd8a8,stroke:#f08c00,color:#000\n  class Player,Browser ui\n  class Test,Lint,Cov,Rel,DBImg,WBImg svc\n  class Supa,DBHost data\n  class Render,Codecov ext"
+    },
+    {
+      "title": "Data model",
+      "kind": "data_model",
+      "image": "FILE: rivetdb-case-study/diagrams/data-model.svg",
+      "caption": "Server state, the value types, the expiry heap and schema registry, and the whiteboard's archive tables.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/data-model.mmd",
+      "mermaidSource": "erDiagram\n  SERVER_STATE ||--o{ KEY_ENTRY : \"db (DashMap)\"\n  SERVER_STATE ||--o{ EXPIRY : \"expiries (min-heap)\"\n  SERVER_STATE ||--o{ ACCESS_COUNT : \"key_access_count\"\n  KEY_ENTRY ||--|| VALUE_OBJECT : \"holds\"\n  SCHEMA ||--o{ KEY_ENTRY : \"validates on TSET\"\n  BOARD ||--o{ STROKE : \"archived strokes\"\n\n  SERVER_STATE {\n    usize max_memory\n    enum eviction_policy \"lfu, lru, noeviction\"\n    u64 expired_count\n  }\n  KEY_ENTRY {\n    string key PK\n  }\n  VALUE_OBJECT {\n    enum kind \"String, List, Set, ZSet, Hash, Json, BloomFilter, TimeSeries\"\n  }\n  EXPIRY {\n    instant expires_at\n    string key\n  }\n  ACCESS_COUNT {\n    string key\n    u64 hits\n  }\n  SCHEMA {\n    string name PK\n    map fields \"string, integer, float, boolean, array, object, optional\"\n  }\n  BOARD {\n    uuid id PK\n    varchar board_code UK\n    timestamptz ended_at\n    int stroke_count\n  }\n  STROKE {\n    uuid id PK\n    uuid board_id FK\n    varchar display_name\n    varchar color\n    jsonb points\n  }\n\n  classDef data fill:#c3fae8,stroke:#0ca678\n  class SERVER_STATE,KEY_ENTRY,VALUE_OBJECT,EXPIRY,ACCESS_COUNT,SCHEMA,BOARD,STROKE data"
+    },
+    {
+      "title": "Authentication",
+      "kind": "auth_flow",
+      "image": "FILE: rivetdb-case-study/diagrams/auth-flow.svg",
+      "caption": "Per-connection password auth: commands are refused until AUTH succeeds, with PING and QUIT exempt.",
+      "sourceFile": "FILE: rivetdb-case-study/diagrams/auth-flow.mmd",
+      "mermaidSource": "sequenceDiagram\n  box rgb(165,216,255) Client\n    participant C as Redis client\n  end\n  box rgb(208,191,255) Server\n    participant T as Connection task\n  end\n\n  Note over T: RIVETDB_PASSWORD set, so require_auth = true\n  C->>T: GET user\n  T-->>C: -NOAUTH Authentication required\n  C->>T: PING\n  T-->>C: +PONG (exempt: AUTH, PING, QUIT, COMMAND)\n  C->>T: AUTH wrong\n  T-->>C: -ERR invalid password\n  C->>T: AUTH correct\n  T->>T: mark this connection authenticated\n  T-->>C: +OK\n  C->>T: GET user\n  T-->>C: value\n  Note over C,T: auth state lives per connection, a new connection starts unauthenticated"
+    }
+  ],
+  "keyDecisions": [
+    {
+      "title": "Sharded concurrent map instead of one thread",
+      "chose": "DashMap plus a Tokio task per connection",
+      "alternative": "The single-threaded, lock-free event loop Redis uses",
+      "why": "Commands on different keys run in parallel. The project's benchmark shows the gain on non-pipelined commands and the cost under heavy pipelining, where per-command locking dominates."
+    },
+    {
+      "title": "Write log through a channel",
+      "chose": "A bounded channel feeding a background append-only-file writer with a 64 KB buffer",
+      "alternative": "Writing and syncing inside the command path",
+      "why": "A slow disk never blocks a client. The trade-off is written in the code: when the channel is full, entries are dropped in favour of speed."
+    },
+    {
+      "title": "Speak the Redis protocol",
+      "chose": "A RESP2 parser instead of a custom protocol",
+      "alternative": "A new protocol with its own client library",
+      "why": "Every demo uses a stock Redis client, and benchmarking uses Redis's own tool, so there is nothing new for developers to install."
+    },
+    {
+      "title": "Extra types built into one value enum",
+      "chose": "JSON, time-series, Bloom filters and schemas as variants of one value type",
+      "alternative": "A plug-in module system",
+      "why": "One binary, one memory estimate per value, and one keyspace that the SQL query command can scan by type."
+    },
+    {
+      "title": "Real-time fan-out in the app layer",
+      "chose": "Socket.IO broadcasting in the demo, with state stored in the database",
+      "alternative": "Database-level publish and subscribe",
+      "why": "The server has no pub/sub or transactions yet, so the demo apps handle broadcasting and order serialisation themselves."
+    }
+  ],
+  "solutionPhases": [
+    {
+      "title": "Core server",
+      "description": "Protocol server with command handling, memory limits and eviction."
+    },
+    {
+      "title": "Feature-complete database",
+      "description": "JSON, time-series, Bloom filters, schemas, SQL queries, metrics, password auth and a Docker image."
+    },
+    {
+      "title": "Collaborative whiteboard demo",
+      "description": "React and Socket.IO board on the database, archived to Postgres, with reconnect handling and code-gated joins."
+    },
+    {
+      "title": "Order-book simulator",
+      "description": "A live order book matched on sorted sets and hashes, with trades recorded as a time series."
+    }
+  ],
+  "stack": [
+    {
+      "technology": "Rust",
+      "usage": "The database server, edition 2021",
+      "featuredOnCard": true
+    },
+    {
+      "technology": "Tokio",
+      "version": "1.49.0",
+      "usage": "Async runtime: a task per connection, expiry loop and log writer",
+      "featuredOnCard": true
+    },
+    {
+      "technology": "DashMap",
+      "version": "6.1.0",
+      "usage": "Sharded concurrent map for the keyspace and metrics counters",
+      "featuredOnCard": true
+    },
+    {
+      "technology": "Redis protocol (RESP)",
+      "usage": "Wire protocol, so stock Redis clients and tools work unchanged",
+      "featuredOnCard": true
+    },
+    {
+      "technology": "Axum",
+      "version": "0.7.9",
+      "usage": "HTTP server for the metrics, health and info endpoints",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "sqlparser",
+      "version": "0.39.0",
+      "usage": "Parses the SQL query and explain commands",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "jsonpath-rust",
+      "version": "0.7.5",
+      "usage": "JSONPath for the JSON commands",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "serde",
+      "version": "1.0.228",
+      "usage": "Config and schema serialisation",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "clap",
+      "version": "4.5.54",
+      "usage": "Command-line flags",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "Prometheus",
+      "usage": "Exposition endpoint with 13 metric families",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "Node.js",
+      "version": "20",
+      "usage": "Demo app servers",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "Socket.IO",
+      "version": "4.8.3",
+      "usage": "Real-time whiteboard events",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "React",
+      "version": "18.3.1",
+      "usage": "Whiteboard client",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "PostgreSQL",
+      "usage": "Archive of finished whiteboard boards and strokes",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "Docker",
+      "usage": "Multi-stage images for the server and the whiteboard",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "GitHub Actions",
+      "usage": "Tests on three operating systems, format and lint checks, coverage and release builds",
+      "featuredOnCard": false
+    },
+    {
+      "technology": "Render",
+      "usage": "Free web service hosting the order-book demo",
+      "featuredOnCard": false
+    }
+  ],
+  "technicalHighlights": [
+    {
+      "concept": "API architecture",
+      "category": "architecture",
+      "status": "present",
+      "detail": "The Redis wire protocol over TCP for data, with a hand-written parser that handles partial and pipelined frames, and HTTP for metrics and health.",
+      "showInSummary": true
+    },
+    {
+      "concept": "Horizontal partitioning",
+      "category": "architecture",
+      "status": "partial",
+      "detail": "The keyspace is striped across DashMap shards inside one process, so commands on different keys do not wait on each other. It does not partition data across nodes.",
+      "showInSummary": true
+    },
+    {
+      "concept": "Message queues",
+      "category": "architecture",
+      "status": "partial",
+      "detail": "An in-process bounded channel decouples the request path from the append-only-file writer, with write, flush and shutdown messages.",
+      "showInSummary": true
+    },
+    {
+      "concept": "Observability stack",
+      "category": "reliability_operations",
+      "status": "partial",
+      "detail": "Built-in Prometheus metrics with 13 families, a health endpoint, a slow log and hot-key tracking, available without an external agent.",
+      "showInSummary": true
+    },
+    {
+      "concept": "CI/CD",
+      "category": "engineering_delivery",
+      "status": "present",
+      "detail": "Tests on Linux, Windows and macOS across stable and nightly toolchains, format and lint checks, coverage upload and a release build artifact.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Automated testing",
+      "category": "engineering_delivery",
+      "status": "present",
+      "detail": "78 tests pass: 32 library and 46 command tests. 7 integration tests run against a live server.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Test coverage",
+      "category": "engineering_delivery",
+      "status": "partial",
+      "detail": "12.64 percent of lines, measured with tarpaulin. Coverage is strongest in schemas, Bloom filters and auth, and lowest in the newer command families.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Logging",
+      "category": "reliability_operations",
+      "status": "present",
+      "detail": "Structured tracing logs with a configurable level filter.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Authentication",
+      "category": "security_access",
+      "status": "partial",
+      "detail": "Optional per-connection password auth. Commands are refused until AUTH succeeds, with PING, QUIT and COMMAND exempt.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Monolith vs microservices",
+      "category": "architecture",
+      "status": "present",
+      "detail": "A single-process server. Demo apps are separate small services that talk to it over TCP.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Docker orchestration",
+      "category": "infrastructure",
+      "status": "partial",
+      "detail": "Multi-stage images with dependency caching for the server and the whiteboard demo.",
+      "showInSummary": false
+    },
+    {
+      "concept": "Security and compliance controls",
+      "category": "security_access",
+      "status": "partial",
+      "detail": "Controls that support compliance work: optional password auth, schema validation at write time, TTLs and time-series retention, and memory caps with eviction.",
+      "showInSummary": false
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+flowchart LR
+  subgraph Clients
+    CLI["redis-cli /<br/>redis-benchmark"]
+    Apps["Demo app servers<br/>Node redis client"]
+    Prom["Prometheus<br/>scraper"]
+  end
+  subgraph App["Server (Rust + Tokio)"]
+    TCP["TCP listener :7878<br/>task per connection"]
+    RESP["RESP parser<br/>+ AUTH gate"]
+    Router["Command router<br/>about 100 commands"]
+    HTTP["Axum :9090<br/>/metrics /health /info"]
+  end
+  subgraph Services["Background tasks"]
+    Expiry["Expiry sweeper<br/>every 100 ms"]
+    Evict["LFU eviction"]
+    AOFW["AOF writer<br/>mpsc channel"]
+  end
+  subgraph Data
+    Map[("DashMap keyspace<br/>string, list, set, zset,<br/>hash, json, ts, bloom")]
+    Schemas[("Schema registry")]
+    AOF[("appendonly.aof")]
+  end
+
+  CLI --> TCP
+  Apps --> TCP
+  Prom --> HTTP
+  TCP --> RESP --> Router
+  Router --> Map
+  Router --> Schemas
+  Router -->|"writes"| AOFW --> AOF
+  Router --> Evict --> Map
+  Expiry --> Map
+  HTTP --> Map
+
+  classDef ui fill:#a5d8ff,stroke:#1c7ed6,color:#000
+  classDef svc fill:#d0bfff,stroke:#7048e8,color:#000
+  classDef data fill:#c3fae8,stroke:#0ca678,color:#000
+  classDef ext fill:#ffd8a8,stroke:#f08c00,color:#000
+  class CLI,Apps ui
+  class TCP,RESP,Router,HTTP,Expiry,Evict,AOFW svc
+  class Map,Schemas,AOF data
+  class Prom ext

@@ -1,0 +1,21 @@
+sequenceDiagram
+  box rgb(165,216,255) Client
+    participant C as Redis client
+  end
+  box rgb(208,191,255) Server
+    participant T as Connection task
+  end
+
+  Note over T: RIVETDB_PASSWORD set, so require_auth = true
+  C->>T: GET user
+  T-->>C: -NOAUTH Authentication required
+  C->>T: PING
+  T-->>C: +PONG (exempt: AUTH, PING, QUIT, COMMAND)
+  C->>T: AUTH wrong
+  T-->>C: -ERR invalid password
+  C->>T: AUTH correct
+  T->>T: mark this connection authenticated
+  T-->>C: +OK
+  C->>T: GET user
+  T-->>C: value
+  Note over C,T: auth state lives per connection, a new connection starts unauthenticated

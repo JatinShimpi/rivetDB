@@ -1,0 +1,39 @@
+flowchart LR
+  subgraph CI["GitHub Actions (ci.yml)"]
+    Test["Tests: 3 OS x<br/>stable + nightly"]
+    Lint["rustfmt + clippy"]
+    Cov["tarpaulin"]
+    Rel["Release build<br/>artifact"]
+  end
+  subgraph Images["Containers"]
+    DBImg["Database image<br/>rust:1.87 to debian-slim"]
+    WBImg["Whiteboard image<br/>Vite build + Node"]
+  end
+  subgraph Hosting
+    DBHost["Hosted database<br/>TCP endpoint"]
+    Render["Render free web service<br/>order book bridge"]
+    Supa[("Supabase Postgres<br/>board archive")]
+  end
+  subgraph Ext["External"]
+    Codecov["Codecov"]
+    Player["Player PC forwarder<br/>(targets /telemetry, removed<br/>in current server.js)"]
+    Browser["Browser<br/>market + trade pages"]
+  end
+
+  Test --> Rel
+  Cov --> Codecov
+  DBImg --> DBHost
+  WBImg -.-> DBHost
+  Render -->|"RESP"| DBHost
+  WBImg --> Supa
+  Player -.->|"HTTP"| Render
+  Browser --> Render
+
+  classDef ui fill:#a5d8ff,stroke:#1c7ed6,color:#000
+  classDef svc fill:#d0bfff,stroke:#7048e8,color:#000
+  classDef data fill:#c3fae8,stroke:#0ca678,color:#000
+  classDef ext fill:#ffd8a8,stroke:#f08c00,color:#000
+  class Player,Browser ui
+  class Test,Lint,Cov,Rel,DBImg,WBImg svc
+  class Supa,DBHost data
+  class Render,Codecov ext

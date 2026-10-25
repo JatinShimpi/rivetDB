@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Thumbnail</title>
+<style>
+  :root {
+    --bg: #0d1424;
+    --bg2: #131c31;
+    --text: #eef2f8;
+    --muted: #9aa6bd;
+    --ui: #a5d8ff;
+    --svc: #d0bfff;
+    --data: #c3fae8;
+    --ext: #ffd8a8;
+    --line: #3a4766;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1600px; height: 900px; background: var(--bg); overflow: hidden; }
+  body {
+    font-family: "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(900px 600px at 85% 20%, rgba(208,191,255,0.10), transparent 60%),
+      radial-gradient(700px 500px at 10% 90%, rgba(195,250,232,0.08), transparent 60%),
+      var(--bg);
+    display: grid;
+    grid-template-columns: 700px 1fr;
+    padding: 88px 80px;
+    gap: 40px;
+  }
+  .copy { display: flex; flex-direction: column; justify-content: center; }
+  .eyebrow {
+    font-family: "Cascadia Code", "Cascadia Mono", monospace;
+    font-size: 22px; letter-spacing: 0.04em; color: var(--data);
+    margin-bottom: 28px;
+  }
+  h1 { font-size: 60px; line-height: 1.08; font-weight: 700; letter-spacing: -0.015em; }
+  h1 .accent { color: var(--svc); }
+  .tags { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 40px; }
+  .tag {
+    font-family: "Cascadia Code", "Cascadia Mono", monospace;
+    font-size: 18px; padding: 9px 13px; border-radius: 10px;
+    background: var(--bg2); border: 1px solid var(--line); color: var(--text);
+  }
+
+  .diagram { position: relative; }
+  svg { width: 100%; height: 100%; }
+  .box-label { font-family: "Segoe UI", sans-serif; font-size: 22px; font-weight: 600; fill: #0d1424; }
+  .box-sub { font-family: "Cascadia Code", monospace; font-size: 16px; fill: #24304a; }
+  .shard-label { font-family: "Cascadia Code", monospace; font-size: 17px; fill: #0d1424; font-weight: 600; }
+  .caption { font-family: "Cascadia Code", monospace; font-size: 16px; fill: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="copy">
+    <div class="eyebrow">// speaks the Redis protocol</div>
+    <h1>A Redis-compatible database,<br><span class="accent">written in Rust</span></h1>
+    <div class="tags">
+      <span class="tag">JSON</span>
+      <span class="tag">Time-series</span>
+      <span class="tag">Bloom filters</span>
+      <span class="tag">Schemas</span>
+      <span class="tag">SQL query</span>
+    </div>
+  </div>
+
+  <div class="diagram">
+    <svg viewBox="0 0 760 724" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#5d6b8c"/>
+        </marker>
+      </defs>
+
+      <!-- Clients -->
+      <rect x="40" y="40" width="200" height="84" rx="14" fill="#a5d8ff"/>
+      <text x="140" y="80" text-anchor="middle" class="box-label">redis-cli</text>
+      <text x="140" y="106" text-anchor="middle" class="box-sub">stock client</text>
+
+      <rect x="280" y="40" width="200" height="84" rx="14" fill="#a5d8ff"/>
+      <text x="380" y="80" text-anchor="middle" class="box-label">Your app</text>
+      <text x="380" y="106" text-anchor="middle" class="box-sub">any Redis lib</text>
+
+      <rect x="520" y="40" width="200" height="84" rx="14" fill="#ffd8a8"/>
+      <text x="620" y="80" text-anchor="middle" class="box-label">Prometheus</text>
+      <text x="620" y="106" text-anchor="middle" class="box-sub">/metrics</text>
+
+      <!-- Arrows to server -->
+      <line x1="140" y1="124" x2="250" y2="200" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+      <line x1="380" y1="124" x2="380" y2="200" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+      <line x1="620" y1="124" x2="560" y2="200" stroke="#5d6b8c" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrow)"/>
+
+      <!-- Server -->
+      <rect x="40" y="206" width="680" height="96" rx="16" fill="#d0bfff"/>
+      <text x="380" y="248" text-anchor="middle" class="box-label">Tokio: one task per connection</text>
+      <text x="380" y="278" text-anchor="middle" class="box-sub">RESP parser · auth · command router</text>
+
+      <!-- Fan-out to shards -->
+      <line x1="140" y1="302" x2="110" y2="372" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+      <line x1="270" y1="302" x2="270" y2="372" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+      <line x1="490" y1="302" x2="490" y2="372" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+      <line x1="620" y1="302" x2="650" y2="372" stroke="#5d6b8c" stroke-width="3" marker-end="url(#arrow)"/>
+
+      <!-- Shards -->
+      <g>
+        <rect x="40" y="378" width="140" height="110" rx="12" fill="#c3fae8"/>
+        <text x="110" y="420" text-anchor="middle" class="shard-label">shard 1</text>
+        <text x="110" y="450" text-anchor="middle" class="box-sub">string</text>
+        <text x="110" y="474" text-anchor="middle" class="box-sub">json</text>
+
+        <rect x="200" y="378" width="140" height="110" rx="12" fill="#c3fae8"/>
+        <text x="270" y="420" text-anchor="middle" class="shard-label">shard 2</text>
+        <text x="270" y="450" text-anchor="middle" class="box-sub">zset</text>
+        <text x="270" y="474" text-anchor="middle" class="box-sub">hash</text>
+
+        <rect x="420" y="378" width="140" height="110" rx="12" fill="#c3fae8"/>
+        <text x="490" y="420" text-anchor="middle" class="shard-label">shard 3</text>
+        <text x="490" y="450" text-anchor="middle" class="box-sub">ts</text>
+        <text x="490" y="474" text-anchor="middle" class="box-sub">bloom</text>
+
+        <rect x="580" y="378" width="140" height="110" rx="12" fill="#c3fae8"/>
+        <text x="650" y="420" text-anchor="middle" class="shard-label">shard n</text>
+        <text x="650" y="450" text-anchor="middle" class="box-sub">list</text>
+        <text x="650" y="474" text-anchor="middle" class="box-sub">set</text>
+
+        <text x="380" y="440" text-anchor="middle" class="shard-label" fill="#c3fae8" style="fill:#c3fae8">· · ·</text>
+      </g>
+      <text x="380" y="524" text-anchor="middle" class="caption">sharded keyspace: different keys, no shared lock</text>
+
+      <!-- Write log -->
+      <line x1="380" y1="540" x2="380" y2="596" stroke="#5d6b8c" stroke-width="3" stroke-dasharray="7 6" marker-end="url(#arrow)"/>
+      <rect x="200" y="602" width="360" height="84" rx="14" fill="#c3fae8"/>
+      <text x="380" y="642" text-anchor="middle" class="box-label">Append-only log</text>
+      <text x="380" y="668" text-anchor="middle" class="box-sub">background writer</text>
+    </svg>
+  </div>
+</body>
+</html>

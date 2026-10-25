@@ -1,0 +1,29 @@
+sequenceDiagram
+  box rgb(165,216,255) Browsers
+    participant A as User A
+    participant B as User B
+  end
+  box rgb(208,191,255) App server
+    participant S as Node + Socket.IO
+  end
+  box rgb(195,250,232) Data
+    participant D as Database (RESP)
+    participant P as Postgres archive
+  end
+
+  A->>S: create_board {name}
+  S->>D: SET board:CODE:name, SADD boards:active
+  S-->>A: board_ready {code}
+  B->>S: join_board {code}
+  S->>D: LRANGE board:CODE:strokes, HSET users
+  S-->>B: board_ready {strokes}
+  A->>S: draw_move (live segment)
+  S-->>B: draw_move
+  A->>S: draw {points}
+  S->>D: LPUSH board:CODE:strokes
+  S-->>B: stroke
+  Note over A,B: everyone leaves
+  S->>D: SCARD board:CODE:online = 0
+  S->>D: LRANGE all strokes
+  S->>P: INSERT boards, strokes
+  S->>D: DEL board keys, SREM boards:active

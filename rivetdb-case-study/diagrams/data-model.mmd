@@ -1,0 +1,47 @@
+erDiagram
+  SERVER_STATE ||--o{ KEY_ENTRY : "db (DashMap)"
+  SERVER_STATE ||--o{ EXPIRY : "expiries (min-heap)"
+  SERVER_STATE ||--o{ ACCESS_COUNT : "key_access_count"
+  KEY_ENTRY ||--|| VALUE_OBJECT : "holds"
+  SCHEMA ||--o{ KEY_ENTRY : "validates on TSET"
+  BOARD ||--o{ STROKE : "archived strokes"
+
+  SERVER_STATE {
+    usize max_memory
+    enum eviction_policy "lfu, lru, noeviction"
+    u64 expired_count
+  }
+  KEY_ENTRY {
+    string key PK
+  }
+  VALUE_OBJECT {
+    enum kind "String, List, Set, ZSet, Hash, Json, BloomFilter, TimeSeries"
+  }
+  EXPIRY {
+    instant expires_at
+    string key
+  }
+  ACCESS_COUNT {
+    string key
+    u64 hits
+  }
+  SCHEMA {
+    string name PK
+    map fields "string, integer, float, boolean, array, object, optional"
+  }
+  BOARD {
+    uuid id PK
+    varchar board_code UK
+    timestamptz ended_at
+    int stroke_count
+  }
+  STROKE {
+    uuid id PK
+    uuid board_id FK
+    varchar display_name
+    varchar color
+    jsonb points
+  }
+
+  classDef data fill:#c3fae8,stroke:#0ca678
+  class SERVER_STATE,KEY_ENTRY,VALUE_OBJECT,EXPIRY,ACCESS_COUNT,SCHEMA,BOARD,STROKE data

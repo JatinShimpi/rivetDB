@@ -1,0 +1,28 @@
+sequenceDiagram
+  box rgb(165,216,255) Client
+    participant C as Redis client
+  end
+  box rgb(208,191,255) Server
+    participant T as Connection task
+    participant R as Router
+    participant W as AOF writer task
+  end
+  box rgb(195,250,232) Data
+    participant M as DashMap
+    participant F as appendonly.aof
+  end
+
+  C->>T: *3 $3 SET $4 user $4 Asha (RESP)
+  T->>T: buffer bytes, parse frame
+  alt incomplete frame
+    T->>T: wait for more bytes
+  end
+  T->>T: authenticated? else NOAUTH
+  T->>R: route SET
+  R->>M: insert into key's shard (other shards free)
+  R->>R: evict if over max_memory
+  R-->>T: +OK
+  T->>W: try_send(command) to channel
+  T->>T: record count, time, slow log if over 1 ms
+  T-->>C: +OK
+  W->>F: buffered write, fsync per policy
